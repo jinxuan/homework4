@@ -14,26 +14,25 @@ class MLPPlanner(nn.Module):
         self,
         n_track: int = 10,
         n_waypoints: int = 3,
-        hidden_size: int = 256,  # Reduced from 1024
-        num_hidden_layers: int = 3,  # Reduced from 6
-        dropout_rate: float = 0.1  # Reduced dropout
+        hidden_size: int = 512,
+        num_hidden_layers: int = 3,
+        dropout_rate: float = 0.1
     ):
         super().__init__()
 
         self.n_track = n_track
         self.n_waypoints = n_waypoints
 
-        # Input size: 2 * n_track * 2 (flattened left and right track coordinates)
         input_size = 2 * n_track * 2
         output_size = n_waypoints * 2
 
-        # Simple architecture with fewer parameters
         self.input_layer = nn.Linear(input_size, hidden_size)
         
-        # Create multiple hidden layers
-        self.hidden_layers = nn.ModuleList()
-        for _ in range(num_hidden_layers):
-            self.hidden_layers.append(nn.Linear(hidden_size, hidden_size))
+        self.hidden_layers = nn.ModuleList([
+            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size, hidden_size)
+        ])
 
         self.output = nn.Linear(hidden_size, output_size)
         self.dropout = nn.Dropout(dropout_rate)
@@ -46,12 +45,10 @@ class MLPPlanner(nn.Module):
     ) -> torch.Tensor:
         batch_size = track_left.shape[0]
 
-        # Flatten inputs
         track_left_flat = track_left.reshape(batch_size, -1)
         track_right_flat = track_right.reshape(batch_size, -1)
         x = torch.cat([track_left_flat, track_right_flat], dim=1)
 
-        # Forward pass with simple residual connections
         x = F.relu(self.input_layer(x))
         x = self.dropout(x)
 
@@ -59,7 +56,7 @@ class MLPPlanner(nn.Module):
             residual = x
             x = F.relu(layer(x))
             x = self.dropout(x)
-            x = x + residual  # Simple residual connection
+            x = x + residual
 
         out = self.output(x)
         return out.reshape(batch_size, self.n_waypoints, 2)
