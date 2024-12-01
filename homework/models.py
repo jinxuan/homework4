@@ -70,87 +70,61 @@ class TransformerPlanner(nn.Module):
     ):
         super().__init__()
         
-        # Enhanced model dimensions
+        # Model dimensions
         self.n_track = n_track
         self.n_waypoints = n_waypoints
-        self.embedding_dim = 128  # Increased from 64
-        self.num_heads = 8       # Increased from 4
-        self.num_layers = 3      # Increased from 2
-        self.dropout = 0.2       # Slightly increased dropout
+        self.embedding_dim = 128
+        self.num_heads = 8
+        self.dropout = 0.1
         
-        # Position encoding
-        self.pos_encoding = nn.Parameter(torch.zeros(1, 2 * n_track, self.embedding_dim))
-        
-        # Input processing
+        # Input processing for track points (byte array in Perceiver terms)
         self.input_projection = nn.Sequential(
-            nn.Linear(2, self.embedding_dim // 2),
-            nn.LayerNorm(self.embedding_dim // 2),
-            nn.ReLU(),
-            nn.Linear(self.embedding_dim // 2, self.embedding_dim),
+            nn.Linear(2, self.embedding_dim),
             nn.LayerNorm(self.embedding_dim),
         )
         
-        # Transformer layers
-        encoder_layer = nn.TransformerEncoderLayer(
+        # Learned query embeddings (latent array in Perceiver terms)
+        self.query_embedding = nn.Embedding(n_waypoints, self.embedding_dim)
+        
+        # Cross-attention layers
+        decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.embedding_dim,
             nhead=self.num_heads,
-            dim_feedforward=512,  # Increased from 128
+            dim_feedforward=512,
             dropout=self.dropout,
-            batch_first=True,
-            activation='gelu'     # Changed from ReLU
+            batch_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
-        
-        # Output processing with residual connections
-        self.output_projection = nn.Sequential(
-            nn.Linear(self.embedding_dim, self.embedding_dim // 2),
-            nn.LayerNorm(self.embedding_dim // 2),
-            nn.GELU(),
-            nn.Dropout(self.dropout),
-            nn.Linear(self.embedding_dim // 2, self.embedding_dim // 4),
-            nn.LayerNorm(self.embedding_dim // 4),
-            nn.GELU(),
-            nn.Dropout(self.dropout),
-            nn.Linear(self.embedding_dim // 4, 2)
+        self.cross_attention = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=3
         )
         
-        # Initialize weights
-        self._init_weights()
-    
-    def _init_weights(self):
-        # Xavier initialization for linear layers
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        # Output projection
+        self.output_projection = nn.Linear(self.embedding_dim, 2)
         
-        # Initialize position encoding
-        nn.init.normal_(self.pos_encoding, mean=0.0, std=0.02)
-    
     def forward(self, track_left, track_right):
         batch_size = track_left.shape[0]
         
-        # Reshape track data
-        track_left_flat = track_left.reshape(batch_size, self.n_track, 2)
-        track_right_flat = track_right.reshape(batch_size, self.n_track, 2)
-        x = torch.cat([track_left_flat, track_right_flat], dim=1)
+        # Process track points (byte array)
+        track_left = track_left.reshape(batch_size, self.n_track, 2)
+        track_right = track_right.reshape(batch_size, self.n_track, 2)
+        track_points = torch.cat([track_left, track_right], dim=1)  # [B, 2*n_track, 2]
+        track_features = self.input_projection(track_points)  # [B, 2*n_track, D]
         
-        # Project to embedding dimension and add position encoding
-        x = self.input_projection(x)
-        x = x + self.pos_encoding
+        # Generate query embeddings (latent array)
+        query_indices = torch.arange(self.n_waypoints, device=track_left.device)
+        queries = self.query_embedding(query_indices)  # [n_waypoints, D]
+        queries = queries.unsqueeze(0).expand(batch_size, -1, -1)  # [B, n_waypoints, D]
         
-        # Apply transformer
-        x = self.transformer(x)
+        # Cross-attention between queries and track features
+        # queries = Q, track_features = K,V
+        output = self.cross_attention(
+            queries,  # [B, n_waypoints, D]
+            track_features,  # [B, 2*n_track, D]
+        )
         
-        # Global average pooling
-        x = x.mean(dim=1, keepdim=True)
-        
-        # Expand to n_waypoints
-        x = x.expand(-1, self.n_waypoints, -1)
-        
-        # Generate waypoints
-        waypoints = self.output_projection(x)
+        # Project to waypoint coordinates
+        waypoints = self.output_projection(output)  # [B, n_waypoints, 2]
         
         return waypoints
 
