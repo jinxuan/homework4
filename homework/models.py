@@ -63,67 +63,98 @@ class MLPPlanner(nn.Module):
 
 
 class TransformerPlanner(nn.Module):
-    def __init__(self):
+    def __init__(
+        self,
+        n_track: int = 10,
+        n_waypoints: int = 3,
+    ):
         super().__init__()
         
-        # Model dimensions
-        self.embedding_dim = 64
-        self.num_heads = 4
-        self.num_layers = 2
-        self.dropout = 0.1
+        # Enhanced model dimensions
+        self.n_track = n_track
+        self.n_waypoints = n_waypoints
+        self.embedding_dim = 128  # Increased from 64
+        self.num_heads = 8       # Increased from 4
+        self.num_layers = 3      # Increased from 2
+        self.dropout = 0.2       # Slightly increased dropout
         
-        # Input processing - Changed to handle 2D input properly
+        # Position encoding
+        self.pos_encoding = nn.Parameter(torch.zeros(1, 2 * n_track, self.embedding_dim))
+        
+        # Input processing
         self.input_projection = nn.Sequential(
-            nn.Linear(2, self.embedding_dim),
+            nn.Linear(2, self.embedding_dim // 2),
+            nn.LayerNorm(self.embedding_dim // 2),
             nn.ReLU(),
-            nn.Dropout(self.dropout)
+            nn.Linear(self.embedding_dim // 2, self.embedding_dim),
+            nn.LayerNorm(self.embedding_dim),
         )
         
         # Transformer layers
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.embedding_dim,
             nhead=self.num_heads,
-            dim_feedforward=128,
+            dim_feedforward=512,  # Increased from 128
             dropout=self.dropout,
-            batch_first=True
+            batch_first=True,
+            activation='gelu'     # Changed from ReLU
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
         
-        # Output processing
+        # Output processing with residual connections
         self.output_projection = nn.Sequential(
-            nn.Linear(self.embedding_dim, 32),
-            nn.ReLU(),
-            nn.Linear(32, 2)
+            nn.Linear(self.embedding_dim, self.embedding_dim // 2),
+            nn.LayerNorm(self.embedding_dim // 2),
+            nn.GELU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.embedding_dim // 2, self.embedding_dim // 4),
+            nn.LayerNorm(self.embedding_dim // 4),
+            nn.GELU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.embedding_dim // 4, 2)
         )
+        
+        # Initialize weights
+        self._init_weights()
+    
+    def _init_weights(self):
+        # Xavier initialization for linear layers
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        
+        # Initialize position encoding
+        nn.init.normal_(self.pos_encoding, mean=0.0, std=0.02)
     
     def forward(self, track_left, track_right):
         batch_size = track_left.shape[0]
-        seq_len = track_left.shape[1]
         
-        # Combine track boundaries [batch, seq_len, 2]
-        track_input = torch.stack([track_left, track_right], dim=-1)
+        # Reshape track data
+        track_left_flat = track_left.reshape(batch_size, self.n_track, 2)
+        track_right_flat = track_right.reshape(batch_size, self.n_track, 2)
+        x = torch.cat([track_left_flat, track_right_flat], dim=1)
         
-        # Project input to embedding dimension
-        x = self.input_projection(track_input)
-        
-        # Add positional encoding using sin/cos directly
-        position = torch.arange(seq_len, device=x.device).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, self.embedding_dim, 2, device=x.device) * 
-                           (-math.log(10000.0) / self.embedding_dim))
-        
-        pe = torch.zeros(seq_len, self.embedding_dim, device=x.device)
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        x = x + pe.unsqueeze(0)
+        # Project to embedding dimension and add position encoding
+        x = self.input_projection(x)
+        x = x + self.pos_encoding
         
         # Apply transformer
         x = self.transformer(x)
+        
+        # Global average pooling
+        x = x.mean(dim=1, keepdim=True)
+        
+        # Expand to n_waypoints
+        x = x.expand(-1, self.n_waypoints, -1)
         
         # Generate waypoints
         waypoints = self.output_projection(x)
         
         return waypoints
-    
+
+
 class CNNPlanner(torch.nn.Module):
     def __init__(
         self,
