@@ -10,8 +10,8 @@ import numpy as np
 import torch.nn.functional as F  # Add this import at the top of the file
 
 # Enhanced training hyperparameters
-BATCH_SIZE = 256  # Increased batch size
-EPOCHS = 200  # More epochs
+BATCH_SIZE = 128  # Increased batch size
+EPOCHS = 150  # More epochs
 LEARNING_RATE = 1e-3  # Increased learning rate from 1e-3 to 5e-4
 WEIGHT_DECAY = 1e-4  # Reduced weight decay from 1e-4 to 1e-5
 PATIENCE = 20  # For early stopping
@@ -90,11 +90,16 @@ def train_planner():
             predicted_waypoints = model(track_left, track_right)
             
             # Compute loss
-            loss = combined_loss(
-                predicted_waypoints,
-                target_waypoints,
-                waypoints_mask
+            loss = F.mse_loss(
+                predicted_waypoints[..., 0],  # longitudinal
+                target_waypoints[..., 0],
+                reduction='none'
+            ) + 2.0 * F.mse_loss(
+                predicted_waypoints[..., 1],  # lateral
+                target_waypoints[..., 1],
+                reduction='none'
             )
+            loss = (loss * waypoints_mask[..., None]).mean()
             
             # Backward pass
             optimizer.zero_grad()
