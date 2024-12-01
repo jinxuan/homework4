@@ -66,20 +66,24 @@ class TransformerPlanner(nn.Module):
     def __init__(self):
         super().__init__()
         
-        # Reduced embedding dimensions
-        self.embedding_dim = 64  # Reduced from typical 256/512
-        self.num_heads = 4      # Reduced from typical 8
-        self.num_layers = 2     # Reduced from typical 4/6
+        # Model dimensions
+        self.embedding_dim = 64
+        self.num_heads = 4
+        self.num_layers = 2
         self.dropout = 0.1
         
-        # Input processing
-        self.input_projection = nn.Linear(2, self.embedding_dim)
+        # Input processing - Changed to handle 2D input properly
+        self.input_projection = nn.Sequential(
+            nn.Linear(2, self.embedding_dim),
+            nn.ReLU(),
+            nn.Dropout(self.dropout)
+        )
         
         # Transformer layers
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.embedding_dim,
             nhead=self.num_heads,
-            dim_feedforward=128,  # Reduced from typical 512/1024
+            dim_feedforward=128,
             dropout=self.dropout,
             batch_first=True
         )
@@ -91,30 +95,26 @@ class TransformerPlanner(nn.Module):
             nn.ReLU(),
             nn.Linear(32, 2)
         )
-        
-        # Positional encoding
-        self.register_buffer(
-            "pos_encoding",
-            self._generate_pos_encoding(max_len=64, d_model=self.embedding_dim)
-        )
-    
-    def _generate_pos_encoding(self, max_len, d_model):
-        pos = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, d_model)
-        pe[:, 0::2] = torch.sin(pos * div_term)
-        pe[:, 1::2] = torch.cos(pos * div_term)
-        return pe
     
     def forward(self, track_left, track_right):
-        # Combine track boundaries
-        track_input = torch.stack([track_left, track_right], dim=-1)  # [B, N, 2]
+        batch_size = track_left.shape[0]
+        seq_len = track_left.shape[1]
         
-        # Project to embedding dimension
-        x = self.input_projection(track_input)  # [B, N, embedding_dim]
+        # Combine track boundaries [batch, seq_len, 2]
+        track_input = torch.stack([track_left, track_right], dim=-1)
         
-        # Add positional encoding
-        x = x + self.pos_encoding[:x.size(1)]
+        # Project input to embedding dimension
+        x = self.input_projection(track_input)
+        
+        # Add positional encoding using sin/cos directly
+        position = torch.arange(seq_len, device=x.device).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, self.embedding_dim, 2, device=x.device) * 
+                           (-math.log(10000.0) / self.embedding_dim))
+        
+        pe = torch.zeros(seq_len, self.embedding_dim, device=x.device)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        x = x + pe.unsqueeze(0)
         
         # Apply transformer
         x = self.transformer(x)
@@ -123,7 +123,7 @@ class TransformerPlanner(nn.Module):
         waypoints = self.output_projection(x)
         
         return waypoints
-
+    
 class CNNPlanner(torch.nn.Module):
     def __init__(
         self,
