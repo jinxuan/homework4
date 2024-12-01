@@ -1,0 +1,6 @@
+drive_data/
+drive_data.zip
+*.pyc
+*.th
+*.pth
+.DS_Store
