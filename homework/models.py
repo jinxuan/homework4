@@ -14,15 +14,34 @@ class MLPPlanner(nn.Module):
         n_track: int = 10,
         n_waypoints: int = 3,
     ):
-        """
-        Args:
-            n_track (int): number of points in each side of the track
-            n_waypoints (int): number of waypoints to predict
-        """
         super().__init__()
 
         self.n_track = n_track
         self.n_waypoints = n_waypoints
+
+        # Input size: 2 * n_track * 2 (concatenated left and right track coordinates)
+        input_size = 2 * n_track * 2
+        # Output size: n_waypoints * 2 (x,y coordinates for each waypoint)
+        output_size = n_waypoints * 2
+
+        # Deeper network with larger hidden layers and dropout for regularization
+        self.layers = nn.Sequential(
+            nn.Linear(input_size, 256),
+            nn.ReLU(),
+            nn.BatchNorm1d(256),  # Add batch normalization
+            nn.Dropout(0.1),      # Add dropout
+            
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.BatchNorm1d(256),
+            nn.Dropout(0.1),
+            
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            
+            nn.Linear(128, output_size)
+        )
 
     def forward(
         self,
@@ -30,21 +49,30 @@ class MLPPlanner(nn.Module):
         track_right: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
-        """
-        Predicts waypoints from the left and right boundaries of the track.
-
-        During test time, your model will be called with
-        model(track_left=..., track_right=...), so keep the function signature as is.
-
-        Args:
-            track_left (torch.Tensor): shape (b, n_track, 2)
-            track_right (torch.Tensor): shape (b, n_track, 2)
-
-        Returns:
-            torch.Tensor: future waypoints with shape (b, n_waypoints, 2)
-        """
-        raise NotImplementedError
-
+        batch_size = track_left.shape[0]
+        
+        # Normalize inputs by centering around mean of track points
+        track_center = (track_left + track_right) / 2
+        track_mean = track_center.mean(dim=1, keepdim=True)
+        
+        # Center the tracks around their means
+        track_left = track_left - track_mean
+        track_right = track_right - track_mean
+        
+        # Flatten and concatenate
+        track_left_flat = track_left.reshape(batch_size, -1)
+        track_right_flat = track_right.reshape(batch_size, -1)
+        x = torch.cat([track_left_flat, track_right_flat], dim=1)
+        
+        # Pass through MLP
+        x = self.layers(x)
+        
+        # Reshape output and add back the mean to get absolute coordinates
+        waypoints = x.reshape(batch_size, self.n_waypoints, 2)
+        waypoints = waypoints + track_mean
+        
+        return waypoints
+    
 
 class TransformerPlanner(nn.Module):
     def __init__(
@@ -130,7 +158,7 @@ def load_model(
         assert model_path.exists(), f"{model_path.name} not found"
 
         try:
-            m.load_state_dict(torch.load(model_path, map_location="cpu"))
+            m.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
         except RuntimeError as e:
             raise AssertionError(
                 f"Failed to load {model_path.name}, make sure the default model arguments are set correctly"
