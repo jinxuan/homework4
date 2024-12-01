@@ -14,7 +14,7 @@ BATCH_SIZE = 256  # Increased batch size
 EPOCHS = 200  # More epochs
 LEARNING_RATE = 1e-3  # Increased learning rate from 1e-3 to 5e-4
 WEIGHT_DECAY = 1e-4  # Reduced weight decay from 1e-4 to 1e-5
-PATIENCE = 10  # For early stopping
+PATIENCE = 20  # For early stopping
 
 # Scheduler parameters
 T_MAX = 50  # Number of epochs for a full cosine cycle
@@ -23,7 +23,10 @@ ETA_MIN = 1e-5  # Minimum learning rate
 def train_planner():
     # Set up device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+    print(f"Using device: {device}")
+    if torch.cuda.is_available():
+        print(f"GPU Name: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.0f}MB")
     # Initialize model, optimizer, and loss
     model = MLPPlanner(hidden_size=512, num_hidden_layers=5, dropout_rate=0.3).to(device)
     optimizer = torch.optim.AdamW(
