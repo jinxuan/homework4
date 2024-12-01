@@ -26,14 +26,14 @@ BASE_CONFIG = {
 
 # Significantly modified Transformer config
 TRANSFORMER_CONFIG = {
-    'batch_size': 128,          # Even smaller batch size
-    'epochs': 150,
-    'learning_rate': 1e-4,     # Much lower learning rate
-    'weight_decay': 1e-6,      # Much lower weight decay
-    'patience': 15,
-    't_max': 50,
+    'batch_size': 64,           # Reduced batch size for better generalization
+    'epochs': 150,              # Increased epochs since we're adjusting learning rate
+    'learning_rate': 5e-4,      # Slightly increased learning rate
+    'weight_decay': 1e-5,       # Adjusted weight decay
+    'patience': 25,             # Increased patience
+    't_max': 75,               # Increased t_max for slower learning rate decay
     'eta_min': 1e-6,
-    'warmup_epochs': 5         # Added warmup period
+    'warmup_epochs': 10         # Increased warmup period
 }
 
 def train_planner(model_name='mlp'):
@@ -57,14 +57,15 @@ def train_planner(model_name='mlp'):
     if model_name == 'transformer':
         def get_lr_multiplier(epoch):
             if epoch < config['warmup_epochs']:
-                return epoch / config['warmup_epochs']
+                # Smoother warmup curve
+                return 0.1 + 0.9 * (epoch / config['warmup_epochs'])
             return 1.0
         
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=config['learning_rate'],
             weight_decay=config['weight_decay'],
-            betas=(0.9, 0.98)  # Modified betas for transformer
+            betas=(0.9, 0.999)  # Changed back to default betas
         )
     else:
         optimizer = torch.optim.AdamW(
@@ -82,14 +83,13 @@ def train_planner(model_name='mlp'):
     
     def get_loss_fn(model_type):
         def transformer_loss(pred, target, mask):
-            # L1 Loss with higher weight on lateral error
+            # Adjusted weights for longitudinal and lateral errors
             long_loss = F.l1_loss(pred[..., 0], target[..., 0], reduction='none')
             lat_loss = F.l1_loss(pred[..., 1], target[..., 1], reduction='none')
             
-            # Apply mask to consider only valid waypoints
-            loss = (long_loss + 3.0 * lat_loss) * mask
+            # Increased weight on lateral error
+            loss = (long_loss + 5.0 * lat_loss) * mask
             
-            # Return mean over valid points only
             return loss.sum() / (mask.sum() + 1e-6)
         
         def mlp_loss(pred, target, mask):
