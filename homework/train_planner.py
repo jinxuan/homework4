@@ -91,15 +91,15 @@ def train_planner():
             
             # Compute loss
             loss = F.mse_loss(
-                predicted_waypoints[..., 0],  # longitudinal
-                target_waypoints[..., 0],
+                predicted_waypoints[..., 0],  # longitudinal (B, n_waypoints)
+                target_waypoints[..., 0],     # (B, n_waypoints)
                 reduction='none'
             ) + 2.0 * F.mse_loss(
-                predicted_waypoints[..., 1],  # lateral
-                target_waypoints[..., 1],
+                predicted_waypoints[..., 1],  # lateral (B, n_waypoints)
+                target_waypoints[..., 1],     # (B, n_waypoints)
                 reduction='none'
             )
-            loss = (loss * waypoints_mask[..., None]).mean()
+            loss = (loss * waypoints_mask).mean()
             
             # Backward pass
             optimizer.zero_grad()
