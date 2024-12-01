@@ -14,33 +14,49 @@ class MLPPlanner(nn.Module):
         self,
         n_track: int = 10,
         n_waypoints: int = 3,
-        hidden_size: int = 512,  # Increased hidden size from 256 to 512
-        num_hidden_layers: int = 5,  # Added more hidden layers
-        dropout_rate: float = 0.3  # Increased dropout rate for better regularization
+        hidden_size: int = 1024,  # Increased from 512
+        num_hidden_layers: int = 6,  # Increased from 5
+        dropout_rate: float = 0.2  # Decreased from 0.3 for better stability
     ):
         super().__init__()
 
         self.n_track = n_track
         self.n_waypoints = n_waypoints
 
-        # Input size: 2 * n_track * 2 (concatenated left and right track coordinates)
+        # Input processing layers
         input_size = 2 * n_track * 2
-        # Output size: n_waypoints * 2 (x,y coordinates for each waypoint)
         output_size = n_waypoints * 2
 
+        # Add layer normalization
+        self.layer_norm = nn.LayerNorm(input_size)
+        
+        # Initial projection with larger hidden size
         self.input_layer = nn.Linear(input_size, hidden_size)
         self.bn1 = nn.BatchNorm1d(hidden_size)
 
-        # Create multiple hidden layers dynamically
+        # Hidden layers with skip connections
         self.hidden_layers = nn.ModuleList()
         self.bn_layers = nn.ModuleList()
         for _ in range(num_hidden_layers):
-            self.hidden_layers.append(nn.Linear(hidden_size, hidden_size))
-            self.bn_layers.append(nn.BatchNorm1d(hidden_size))
+            self.hidden_layers.append(nn.Sequential(
+                nn.Linear(hidden_size, hidden_size),
+                nn.GELU(),  # Changed from ReLU to GELU
+                nn.BatchNorm1d(hidden_size)
+            ))
 
-        self.output = nn.Linear(hidden_size, output_size)
+        # Separate prediction heads for better specialization
+        self.longitudinal_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.GELU(),
+            nn.Linear(hidden_size // 2, n_waypoints)  # x coordinates
+        )
+        
+        self.lateral_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.GELU(),
+            nn.Linear(hidden_size // 2, n_waypoints)  # y coordinates
+        )
 
-        # Dropout for regularization
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(
@@ -51,23 +67,34 @@ class MLPPlanner(nn.Module):
     ) -> torch.Tensor:
         batch_size = track_left.shape[0]
 
-        # Flatten and concatenate inputs
+        # Normalize and flatten inputs
         track_left_flat = track_left.reshape(batch_size, -1)
         track_right_flat = track_right.reshape(batch_size, -1)
         x = torch.cat([track_left_flat, track_right_flat], dim=1)
+        
+        # Apply layer normalization
+        x = self.layer_norm(x)
 
-        # Forward pass with residual connections and activations
-        x = self.dropout(F.relu(self.bn1(self.input_layer(x))))
+        # Initial projection
+        x = self.dropout(F.gelu(self.bn1(self.input_layer(x))))
+
+        # Process through hidden layers with residual connections
         residual = x
-        for hidden_layer, bn_layer in zip(self.hidden_layers, self.bn_layers):
-            out = self.dropout(F.relu(bn_layer(hidden_layer(x))))
-            out = out + residual  # Residual connection
-            residual = out  # Update residual for next layer
+        for i, layer in enumerate(self.hidden_layers):
+            if i % 2 == 0:  # Apply residual every 2 layers
+                x = layer(x) + residual
+                residual = x
+            else:
+                x = layer(x)
 
-        # Output layer
-        out = self.output(out)
+        # Separate predictions for longitudinal and lateral coordinates
+        x_coords = self.longitudinal_head(x)
+        y_coords = self.lateral_head(x)
 
-        return out.reshape(batch_size, self.n_waypoints, 2)
+        # Combine predictions
+        out = torch.stack([x_coords, y_coords], dim=-1)
+        
+        return out
 
 
 class TransformerPlanner(nn.Module):

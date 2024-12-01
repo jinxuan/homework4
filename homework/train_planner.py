@@ -10,10 +10,10 @@ import numpy as np
 import torch.nn.functional as F  # Add this import at the top of the file
 
 # Enhanced training hyperparameters
-BATCH_SIZE = 128  # Increased batch size
-EPOCHS = 100  # More epochs
-LEARNING_RATE = 5e-4  # Increased learning rate from 1e-3 to 5e-4
-WEIGHT_DECAY = 1e-5  # Reduced weight decay from 1e-4 to 1e-5
+BATCH_SIZE = 256  # Increased batch size
+EPOCHS = 200  # More epochs
+LEARNING_RATE = 1e-3  # Increased learning rate from 1e-3 to 5e-4
+WEIGHT_DECAY = 1e-4  # Reduced weight decay from 1e-4 to 1e-5
 PATIENCE = 10  # For early stopping
 
 # Scheduler parameters
