@@ -23,41 +23,54 @@ BASE_CONFIG = {
     'eta_min': 1e-5
 }
 
-# Transformer-specific hyperparameters
+# Significantly modified Transformer config
 TRANSFORMER_CONFIG = {
-    'batch_size': 64,  # Smaller batch size for better stability
+    'batch_size': 128,          # Even smaller batch size
     'epochs': 150,
-    'learning_rate': 5e-4,  # Lower learning rate
-    'weight_decay': 1e-5,  # Lower weight decay
-    'patience': 25,  # More patience for convergence
+    'learning_rate': 1e-4,     # Much lower learning rate
+    'weight_decay': 1e-6,      # Much lower weight decay
+    'patience': 15,
     't_max': 50,
-    'eta_min': 1e-6
+    'eta_min': 1e-6,
+    'warmup_epochs': 5         # Added warmup period
 }
 
 def train_planner(model_name='mlp'):
-    # Choose configuration based on model type
     config = TRANSFORMER_CONFIG if model_name == 'transformer' else BASE_CONFIG
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-    if torch.cuda.is_available():
-        print(f"GPU Name: {torch.cuda.get_device_name(0)}")
-        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**2:.0f}MB")
-
+    
     if model_name == 'mlp':
         model = MLPPlanner(hidden_size=512, num_hidden_layers=5, dropout_rate=0.3).to(device)
     elif model_name == 'transformer':
         model = TransformerPlanner().to(device)
-    else:
-        raise ValueError(f"Unknown model type: {model_name}")
+        # Initialize transformer weights properly
+        for p in model.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
     
     print(f"Training {model_name.upper()} model...")
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config['learning_rate'],
-        weight_decay=config['weight_decay']
-    )
+    # Custom learning rate schedule for transformer
+    if model_name == 'transformer':
+        def get_lr_multiplier(epoch):
+            if epoch < config['warmup_epochs']:
+                return epoch / config['warmup_epochs']
+            return 1.0
+        
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config['learning_rate'],
+            weight_decay=config['weight_decay'],
+            betas=(0.9, 0.98)  # Modified betas for transformer
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config['learning_rate'],
+            weight_decay=config['weight_decay']
+        )
     
     scheduler = CosineAnnealingLR(
         optimizer,
@@ -66,21 +79,24 @@ def train_planner(model_name='mlp'):
         verbose=True
     )
     
-    # Modified loss function for Transformer
     def get_loss_fn(model_type):
         def transformer_loss(pred, target, mask):
-            # Stronger emphasis on lateral prediction for transformer
+            # Progressive loss scaling
             long_loss = F.mse_loss(pred[..., 0], target[..., 0], reduction='none')
             lat_loss = F.mse_loss(pred[..., 1], target[..., 1], reduction='none')
-            loss = long_loss + 3.0 * lat_loss  # Increased weight on lateral loss
-            return (loss * mask).mean()
+            
+            # Apply exponential weighting to waypoints
+            waypoint_weights = torch.exp(torch.arange(mask.size(1), device=device) * 0.1)
+            weighted_mask = mask * waypoint_weights[None, :]
+            
+            loss = (long_loss + 2.0 * lat_loss) * weighted_mask[..., None]
+            return loss.mean()
         
         def mlp_loss(pred, target, mask):
             mse = F.mse_loss(pred, target, reduction='none')
             smooth_l1 = F.smooth_l1_loss(pred, target, reduction='none')
             combined = mse + smooth_l1
-            combined = combined * mask[..., None]
-            return combined.mean()
+            return (combined * mask[..., None]).mean()
         
         return transformer_loss if model_type == 'transformer' else mlp_loss
     
@@ -107,7 +123,12 @@ def train_planner(model_name='mlp'):
     best_model_state = None
     
     for epoch in range(config['epochs']):
-        # Training phase
+        # Adjust learning rate for transformer warmup
+        if model_name == 'transformer' and epoch < config['warmup_epochs']:
+            lr_multiplier = get_lr_multiplier(epoch)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = config['learning_rate'] * lr_multiplier
+        
         model.train()
         total_train_loss = 0.0
         num_train_batches = 0
@@ -118,20 +139,22 @@ def train_planner(model_name='mlp'):
             target_waypoints = batch['waypoints'].to(device)
             waypoints_mask = batch['waypoints_mask'].to(device)
             
+            # Gradient accumulation for transformer
+            accumulation_steps = 4 if model_name == 'transformer' else 1
+            
             predicted_waypoints = model(track_left, track_right)
+            loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask) / accumulation_steps
             
-            loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask)
-            
-            optimizer.zero_grad()
             loss.backward()
             
-            # Stronger gradient clipping for transformer
-            max_norm = 0.5 if model_name == 'transformer' else 1.0
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
+            if (num_train_batches + 1) % accumulation_steps == 0:
+                # Stronger gradient clipping for transformer
+                max_norm = 0.1 if model_name == 'transformer' else 1.0
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
+                optimizer.step()
+                optimizer.zero_grad()
             
-            optimizer.step()
-            
-            total_train_loss += loss.item()
+            total_train_loss += loss.item() * accumulation_steps
             num_train_batches += 1
         
         avg_train_loss = total_train_loss / num_train_batches
