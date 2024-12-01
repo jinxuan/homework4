@@ -63,40 +63,73 @@ class MLPPlanner(nn.Module):
 
 
 class TransformerPlanner(nn.Module):
-    def __init__(
-        self,
-        n_track: int = 10,
-        n_waypoints: int = 3,
-        d_model: int = 64,
-    ):
+    def __init__(self, 
+                 d_model=256,
+                 nhead=8,
+                 num_decoder_layers=6,
+                 dim_feedforward=1024,
+                 dropout=0.1,
+                 n_waypoints=3):
         super().__init__()
-
-        self.n_track = n_track
-        self.n_waypoints = n_waypoints
-
-        self.query_embed = nn.Embedding(n_waypoints, d_model)
-
-    def forward(
-        self,
-        track_left: torch.Tensor,
-        track_right: torch.Tensor,
-        **kwargs,
-    ) -> torch.Tensor:
-        """
-        Predicts waypoints from the left and right boundaries of the track.
-
-        During test time, your model will be called with
-        model(track_left=..., track_right=...), so keep the function signature as is.
-
-        Args:
-            track_left (torch.Tensor): shape (b, n_track, 2)
-            track_right (torch.Tensor): shape (b, n_track, 2)
-
-        Returns:
-            torch.Tensor: future waypoints with shape (b, n_waypoints, 2)
-        """
-        raise NotImplementedError
-
+        
+        # Embedding dimension for input features
+        self.d_model = d_model
+        
+        # Learned query embeddings for waypoints
+        self.waypoint_queries = nn.Embedding(n_waypoints, d_model)
+        
+        # Input projection layers for track points
+        self.track_projection = nn.Sequential(
+            nn.Linear(2, d_model),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Transformer decoder
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=num_decoder_layers
+        )
+        
+        # Output projection
+        self.output_projection = nn.Linear(d_model, 2)
+        
+    def forward(self, track_left, track_right):
+        batch_size = track_left.shape[0]
+        device = track_left.device
+        
+        # Concatenate left and right track points
+        # Shape: (batch_size, n_track*2, 2)
+        track_points = torch.cat([track_left, track_right], dim=1)
+        
+        # Project track points to d_model dimension
+        # Shape: (batch_size, n_track*2, d_model)
+        memory = self.track_projection(track_points)
+        
+        # Get learned query embeddings
+        # Shape: (batch_size, n_waypoints, d_model)
+        query_pos = self.waypoint_queries.weight.unsqueeze(0).repeat(batch_size, 1, 1)
+        
+        # Apply transformer decoder
+        # Shape: (batch_size, n_waypoints, d_model)
+        decoded = self.transformer_decoder(
+            tgt=query_pos,
+            memory=memory
+        )
+        
+        # Project to output waypoints
+        # Shape: (batch_size, n_waypoints, 2)
+        waypoints = self.output_projection(decoded)
+        
+        return waypoints
 
 class CNNPlanner(torch.nn.Module):
     def __init__(
