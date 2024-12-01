@@ -9,8 +9,8 @@ from homework.models import MLPPlanner, save_model
 from grader.datasets.road_dataset import load_data
 
 # Training hyperparameters
-BATCH_SIZE = 32
-EPOCHS = 20
+BATCH_SIZE = 64
+EPOCHS = 50
 LEARNING_RATE = 1e-3
 
 def train_planner():
@@ -32,6 +32,7 @@ def train_planner():
     )
     
     # Training loop
+    best_loss = float('inf')
     for epoch in range(EPOCHS):
         model.train()
         total_loss = 0.0
@@ -59,13 +60,11 @@ def train_planner():
         avg_loss = total_loss / len(train_loader)
         print(f'Epoch [{epoch+1}/{EPOCHS}] Loss: {avg_loss:.4f}')
         
-        # Save model checkpoint
-        if (epoch + 1) % 10 == 0:
-            torch.save(model.state_dict(), f'planner_epoch_{epoch+1}.pth')
-
-    # Save the model after training
-    output_path = save_model(model)
-    print(f"Model saved to {output_path}")
+        # Save model if loss improved
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            save_model(model)
+            print(f'New best loss: {best_loss:.4f}')
 
 if __name__ == "__main__":
     train_planner()

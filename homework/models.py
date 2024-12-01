@@ -24,23 +24,13 @@ class MLPPlanner(nn.Module):
         # Output size: n_waypoints * 2 (x,y coordinates for each waypoint)
         output_size = n_waypoints * 2
 
-        # Deeper network with larger hidden layers and dropout for regularization
+        # Simpler architecture with fewer layers
         self.layers = nn.Sequential(
-            nn.Linear(input_size, 256),
+            nn.Linear(input_size, 128),
             nn.ReLU(),
-            nn.BatchNorm1d(256),  # Add batch normalization
-            nn.Dropout(0.1),      # Add dropout
-            
-            nn.Linear(256, 256),
+            nn.Linear(128, 64),
             nn.ReLU(),
-            nn.BatchNorm1d(256),
-            nn.Dropout(0.1),
-            
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.BatchNorm1d(128),
-            
-            nn.Linear(128, output_size)
+            nn.Linear(64, output_size)
         )
 
     def forward(
@@ -51,27 +41,16 @@ class MLPPlanner(nn.Module):
     ) -> torch.Tensor:
         batch_size = track_left.shape[0]
         
-        # Normalize inputs by centering around mean of track points
-        track_center = (track_left + track_right) / 2
-        track_mean = track_center.mean(dim=1, keepdim=True)
-        
-        # Center the tracks around their means
-        track_left = track_left - track_mean
-        track_right = track_right - track_mean
-        
-        # Flatten and concatenate
+        # Simple flatten and concatenate
         track_left_flat = track_left.reshape(batch_size, -1)
         track_right_flat = track_right.reshape(batch_size, -1)
         x = torch.cat([track_left_flat, track_right_flat], dim=1)
         
-        # Pass through MLP
+        # Forward pass through MLP
         x = self.layers(x)
         
-        # Reshape output and add back the mean to get absolute coordinates
-        waypoints = x.reshape(batch_size, self.n_waypoints, 2)
-        waypoints = waypoints + track_mean
-        
-        return waypoints
+        # Reshape to waypoints format
+        return x.reshape(batch_size, self.n_waypoints, 2)
     
 
 class TransformerPlanner(nn.Module):
