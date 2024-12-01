@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from homework.models import MLPPlanner, TransformerPlanner
 from grader.datasets.road_dataset import load_data
+import os
 
 def train(
     model_name: str = "mlp_planner",
@@ -19,6 +20,9 @@ def train(
     batch_size: int = 128,
     num_epoch: int = 40,
 ):
+    # Create checkpoints directory if it doesn't exist
+    os.makedirs('checkpoints', exist_ok=True)
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Model selection
