@@ -2,6 +2,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 HOMEWORK_DIR = Path(__file__).resolve().parent
 INPUT_MEAN = [0.2788, 0.2657, 0.2629]
@@ -13,6 +14,7 @@ class MLPPlanner(nn.Module):
         self,
         n_track: int = 10,
         n_waypoints: int = 3,
+        hidden_size: int = 256  # Increased hidden size
     ):
         super().__init__()
 
@@ -24,14 +26,23 @@ class MLPPlanner(nn.Module):
         # Output size: n_waypoints * 2 (x,y coordinates for each waypoint)
         output_size = n_waypoints * 2
 
-        # Simpler architecture with fewer layers
-        self.layers = nn.Sequential(
-            nn.Linear(input_size, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, output_size)
-        )
+        # Deeper architecture with skip connections and batch normalization
+        self.input_layer = nn.Linear(input_size, hidden_size)
+        self.bn1 = nn.BatchNorm1d(hidden_size)
+        
+        self.hidden1 = nn.Linear(hidden_size, hidden_size)
+        self.bn2 = nn.BatchNorm1d(hidden_size)
+        
+        self.hidden2 = nn.Linear(hidden_size, hidden_size)
+        self.bn3 = nn.BatchNorm1d(hidden_size)
+        
+        self.hidden3 = nn.Linear(hidden_size, hidden_size//2)
+        self.bn4 = nn.BatchNorm1d(hidden_size//2)
+        
+        self.output = nn.Linear(hidden_size//2, output_size)
+        
+        # Dropout for regularization
+        self.dropout = nn.Dropout(0.1)
 
     def forward(
         self,
@@ -41,16 +52,22 @@ class MLPPlanner(nn.Module):
     ) -> torch.Tensor:
         batch_size = track_left.shape[0]
         
-        # Simple flatten and concatenate
+        # Flatten and concatenate inputs
         track_left_flat = track_left.reshape(batch_size, -1)
         track_right_flat = track_right.reshape(batch_size, -1)
         x = torch.cat([track_left_flat, track_right_flat], dim=1)
         
-        # Forward pass through MLP
-        x = self.layers(x)
+        # Forward pass with skip connections and activations
+        x1 = self.dropout(F.relu(self.bn1(self.input_layer(x))))
+        x2 = self.dropout(F.relu(self.bn2(self.hidden1(x1))))
+        x3 = self.dropout(F.relu(self.bn3(self.hidden2(x2))))
+        x3 = x3 + x1  # Skip connection
+        x4 = self.dropout(F.relu(self.bn4(self.hidden3(x3))))
         
-        # Reshape to waypoints format
-        return x.reshape(batch_size, self.n_waypoints, 2)
+        # Output layer
+        out = self.output(x4)
+        
+        return out.reshape(batch_size, self.n_waypoints, 2)
     
 
 class TransformerPlanner(nn.Module):
