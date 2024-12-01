@@ -2,7 +2,6 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 HOMEWORK_DIR = Path(__file__).resolve().parent
 INPUT_MEAN = [0.2788, 0.2657, 0.2629]
@@ -14,7 +13,9 @@ class MLPPlanner(nn.Module):
         self,
         n_track: int = 10,
         n_waypoints: int = 3,
-        hidden_size: int = 256  # Increased hidden size
+        hidden_size: int = 512,  # Increased hidden size from 256 to 512
+        num_hidden_layers: int = 5,  # Added more hidden layers
+        dropout_rate: float = 0.3  # Increased dropout rate for better regularization
     ):
         super().__init__()
 
@@ -26,23 +27,20 @@ class MLPPlanner(nn.Module):
         # Output size: n_waypoints * 2 (x,y coordinates for each waypoint)
         output_size = n_waypoints * 2
 
-        # Deeper architecture with skip connections and batch normalization
         self.input_layer = nn.Linear(input_size, hidden_size)
         self.bn1 = nn.BatchNorm1d(hidden_size)
-        
-        self.hidden1 = nn.Linear(hidden_size, hidden_size)
-        self.bn2 = nn.BatchNorm1d(hidden_size)
-        
-        self.hidden2 = nn.Linear(hidden_size, hidden_size)
-        self.bn3 = nn.BatchNorm1d(hidden_size)
-        
-        self.hidden3 = nn.Linear(hidden_size, hidden_size//2)
-        self.bn4 = nn.BatchNorm1d(hidden_size//2)
-        
-        self.output = nn.Linear(hidden_size//2, output_size)
-        
+
+        # Create multiple hidden layers dynamically
+        self.hidden_layers = nn.ModuleList()
+        self.bn_layers = nn.ModuleList()
+        for _ in range(num_hidden_layers):
+            self.hidden_layers.append(nn.Linear(hidden_size, hidden_size))
+            self.bn_layers.append(nn.BatchNorm1d(hidden_size))
+
+        self.output = nn.Linear(hidden_size, output_size)
+
         # Dropout for regularization
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(dropout_rate)
 
     def forward(
         self,
@@ -51,24 +49,25 @@ class MLPPlanner(nn.Module):
         **kwargs,
     ) -> torch.Tensor:
         batch_size = track_left.shape[0]
-        
+
         # Flatten and concatenate inputs
         track_left_flat = track_left.reshape(batch_size, -1)
         track_right_flat = track_right.reshape(batch_size, -1)
         x = torch.cat([track_left_flat, track_right_flat], dim=1)
-        
-        # Forward pass with skip connections and activations
-        x1 = self.dropout(F.relu(self.bn1(self.input_layer(x))))
-        x2 = self.dropout(F.relu(self.bn2(self.hidden1(x1))))
-        x3 = self.dropout(F.relu(self.bn3(self.hidden2(x2))))
-        x3 = x3 + x1  # Skip connection
-        x4 = self.dropout(F.relu(self.bn4(self.hidden3(x3))))
-        
+
+        # Forward pass with residual connections and activations
+        x = self.dropout(F.relu(self.bn1(self.input_layer(x))))
+        residual = x
+        for hidden_layer, bn_layer in zip(self.hidden_layers, self.bn_layers):
+            out = self.dropout(F.relu(bn_layer(hidden_layer(x))))
+            out = out + residual  # Residual connection
+            residual = out  # Update residual for next layer
+
         # Output layer
-        out = self.output(x4)
-        
+        out = self.output(out)
+
         return out.reshape(batch_size, self.n_waypoints, 2)
-    
+
 
 class TransformerPlanner(nn.Module):
     def __init__(

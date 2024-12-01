@@ -1,24 +1,31 @@
+# train_planner.py
+
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from homework.models import MLPPlanner, save_model
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from homework.models import MLPPlanner, save_model, load_model
 from grader.datasets.road_dataset import load_data
 from homework.metrics import PlannerMetric
 import numpy as np
+import torch.nn.functional as F  # Add this import at the top of the file
 
 # Enhanced training hyperparameters
 BATCH_SIZE = 128  # Increased batch size
 EPOCHS = 100  # More epochs
-LEARNING_RATE = 1e-3
-WEIGHT_DECAY = 1e-4  # L2 regularization
+LEARNING_RATE = 5e-4  # Increased learning rate from 1e-3 to 5e-4
+WEIGHT_DECAY = 1e-5  # Reduced weight decay from 1e-4 to 1e-5
 PATIENCE = 10  # For early stopping
+
+# Scheduler parameters
+T_MAX = 50  # Number of epochs for a full cosine cycle
+ETA_MIN = 1e-5  # Minimum learning rate
 
 def train_planner():
     # Set up device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Initialize model, optimizer, and loss
-    model = MLPPlanner(hidden_size=256).to(device)
+    model = MLPPlanner(hidden_size=512, num_hidden_layers=5, dropout_rate=0.3).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=LEARNING_RATE,
@@ -26,24 +33,20 @@ def train_planner():
     )
     
     # Learning rate scheduler
-    scheduler = ReduceLROnPlateau(
+    scheduler = CosineAnnealingLR(
         optimizer,
-        mode='min',
-        factor=0.5,
-        patience=5,
+        T_max=T_MAX,  # Number of epochs for a full cosine cycle
+        eta_min=ETA_MIN,
         verbose=True
     )
     
-    # Custom weighted MSE loss
-    def weighted_mse_loss(pred, target, mask):
-        # Weight longitudinal error (x) and lateral error (y) differently
-        error = (pred - target) ** 2
-        weighted_error = torch.stack(
-            [error[..., 0] * 1.0,  # longitudinal weight
-             error[..., 1] * 2.0], # lateral weight (higher)
-            dim=-1
-        )
-        return (weighted_error * mask[..., None]).mean()
+    # Refined loss function: Combined MSE and Smooth L1 Loss
+    def combined_loss(pred, target, mask):
+        mse = F.mse_loss(pred, target, reduction='none')
+        smooth_l1 = F.smooth_l1_loss(pred, target, reduction='none')
+        combined = mse + smooth_l1
+        combined = combined * mask[..., None]
+        return combined.mean()
     
     # Create dataloaders
     train_loader = load_data(
@@ -84,7 +87,7 @@ def train_planner():
             predicted_waypoints = model(track_left, track_right)
             
             # Compute loss
-            loss = weighted_mse_loss(
+            loss = combined_loss(
                 predicted_waypoints,
                 target_waypoints,
                 waypoints_mask
@@ -117,7 +120,7 @@ def train_planner():
                 waypoints_mask = batch['waypoints_mask'].to(device)
                 
                 predicted_waypoints = model(track_left, track_right)
-                val_loss = weighted_mse_loss(
+                val_loss = combined_loss(
                     predicted_waypoints,
                     target_waypoints,
                     waypoints_mask
@@ -134,7 +137,7 @@ def train_planner():
               f'Val Loss: {avg_val_loss:.4f}')
         
         # Learning rate scheduling
-        scheduler.step(avg_val_loss)
+        scheduler.step()
         
         # Save best model
         if avg_val_loss < best_val_loss:
@@ -151,9 +154,13 @@ def train_planner():
             break
     
     # Load best model and save it
-    model.load_state_dict(best_model_state)
-    save_model(model)
-    print(f'Final best validation loss: {best_val_loss:.4f}')
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        save_model(model)
+        print(f'Final best validation loss: {best_val_loss:.4f}')
+    else:
+        print('No improvement during training.')
+
 
 if __name__ == "__main__":
     train_planner()
