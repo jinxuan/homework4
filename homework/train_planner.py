@@ -81,16 +81,15 @@ def train_planner(model_name='mlp'):
     
     def get_loss_fn(model_type):
         def transformer_loss(pred, target, mask):
-            # Progressive loss scaling
-            long_loss = F.mse_loss(pred[..., 0], target[..., 0], reduction='none')
-            lat_loss = F.mse_loss(pred[..., 1], target[..., 1], reduction='none')
+            # L1 Loss with higher weight on lateral error
+            long_loss = F.l1_loss(pred[..., 0], target[..., 0], reduction='none')
+            lat_loss = F.l1_loss(pred[..., 1], target[..., 1], reduction='none')
             
-            # Apply exponential weighting to waypoints
-            waypoint_weights = torch.exp(torch.arange(mask.size(1), device=device) * 0.1)
-            weighted_mask = mask * waypoint_weights[None, :]
+            # Apply mask to consider only valid waypoints
+            loss = (long_loss + 3.0 * lat_loss) * mask
             
-            loss = (long_loss + 2.0 * lat_loss) * weighted_mask[..., None]
-            return loss.mean()
+            # Return mean over valid points only
+            return loss.sum() / (mask.sum() + 1e-6)
         
         def mlp_loss(pred, target, mask):
             mse = F.mse_loss(pred, target, reduction='none')
