@@ -63,71 +63,64 @@ class MLPPlanner(nn.Module):
 
 
 class TransformerPlanner(nn.Module):
-    def __init__(self, 
-                 d_model=256,
-                 nhead=8,
-                 num_decoder_layers=6,
-                 dim_feedforward=1024,
-                 dropout=0.1,
-                 n_waypoints=3):
+    def __init__(self):
         super().__init__()
         
-        # Embedding dimension for input features
-        self.d_model = d_model
+        # Reduced embedding dimensions
+        self.embedding_dim = 64  # Reduced from typical 256/512
+        self.num_heads = 4      # Reduced from typical 8
+        self.num_layers = 2     # Reduced from typical 4/6
+        self.dropout = 0.1
         
-        # Learned query embeddings for waypoints
-        self.waypoint_queries = nn.Embedding(n_waypoints, d_model)
+        # Input processing
+        self.input_projection = nn.Linear(2, self.embedding_dim)
         
-        # Input projection layers for track points
-        self.track_projection = nn.Sequential(
-            nn.Linear(2, d_model),
-            nn.ReLU(),
-            nn.Dropout(dropout)
-        )
-        
-        # Transformer decoder
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
+        # Transformer layers
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.embedding_dim,
+            nhead=self.num_heads,
+            dim_feedforward=128,  # Reduced from typical 512/1024
+            dropout=self.dropout,
             batch_first=True
         )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
         
-        self.transformer_decoder = nn.TransformerDecoder(
-            decoder_layer,
-            num_layers=num_decoder_layers
+        # Output processing
+        self.output_projection = nn.Sequential(
+            nn.Linear(self.embedding_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 2)
         )
         
-        # Output projection
-        self.output_projection = nn.Linear(d_model, 2)
-        
+        # Positional encoding
+        self.register_buffer(
+            "pos_encoding",
+            self._generate_pos_encoding(max_len=64, d_model=self.embedding_dim)
+        )
+    
+    def _generate_pos_encoding(self, max_len, d_model):
+        pos = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, d_model)
+        pe[:, 0::2] = torch.sin(pos * div_term)
+        pe[:, 1::2] = torch.cos(pos * div_term)
+        return pe
+    
     def forward(self, track_left, track_right):
-        batch_size = track_left.shape[0]
-        device = track_left.device
+        # Combine track boundaries
+        track_input = torch.stack([track_left, track_right], dim=-1)  # [B, N, 2]
         
-        # Concatenate left and right track points
-        # Shape: (batch_size, n_track*2, 2)
-        track_points = torch.cat([track_left, track_right], dim=1)
+        # Project to embedding dimension
+        x = self.input_projection(track_input)  # [B, N, embedding_dim]
         
-        # Project track points to d_model dimension
-        # Shape: (batch_size, n_track*2, d_model)
-        memory = self.track_projection(track_points)
+        # Add positional encoding
+        x = x + self.pos_encoding[:x.size(1)]
         
-        # Get learned query embeddings
-        # Shape: (batch_size, n_waypoints, d_model)
-        query_pos = self.waypoint_queries.weight.unsqueeze(0).repeat(batch_size, 1, 1)
+        # Apply transformer
+        x = self.transformer(x)
         
-        # Apply transformer decoder
-        # Shape: (batch_size, n_waypoints, d_model)
-        decoded = self.transformer_decoder(
-            tgt=query_pos,
-            memory=memory
-        )
-        
-        # Project to output waypoints
-        # Shape: (batch_size, n_waypoints, 2)
-        waypoints = self.output_projection(decoded)
+        # Generate waypoints
+        waypoints = self.output_projection(x)
         
         return waypoints
 
