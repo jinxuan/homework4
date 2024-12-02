@@ -133,14 +133,17 @@ class TransformerPlanner(nn.Module):
         queries = queries.unsqueeze(0).expand(batch_size, -1, -1)
         
         # Cross-attention between queries and track features
-        # queries = Q, track_features = K,V
         output = self.cross_attention(
             queries,  # [B, n_waypoints, D]
             track_features,  # [B, 2*n_track, D]
         )
         
-        # Project to waypoint coordinates
-        waypoints = self.output_lateral(output)  # [B, n_waypoints, 1]
+        # Project to waypoint coordinates using both heads
+        lateral = self.output_lateral(output)      # [B, n_waypoints, 1]
+        longitudinal = self.output_longitudinal(output)  # [B, n_waypoints, 1]
+        
+        # Combine lateral and longitudinal predictions
+        waypoints = torch.cat([longitudinal, lateral], dim=-1)  # [B, n_waypoints, 2]
         
         return waypoints
 
