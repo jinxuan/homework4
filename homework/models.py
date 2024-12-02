@@ -70,77 +70,131 @@ class TransformerPlanner(nn.Module):
     ):
         super().__init__()
         
-        # Enhanced model dimensions
+        # Perceiver dimensions
         self.n_track = n_track
         self.n_waypoints = n_waypoints
-        self.embedding_dim = 256  # Increased from 128
+        self.input_dim = 2  # (x, y) coordinates
+        self.latent_dim = 256
+        self.num_latents = 8
         self.num_heads = 8
-        self.dropout = 0.1       # Reduced dropout
+        self.num_layers = 4
+        self.dropout = 0.1
         
-        # Input processing with separate pathways for lateral and longitudinal
-        self.input_projection = nn.Sequential(
-            nn.Linear(2, self.embedding_dim),
-            nn.LayerNorm(self.embedding_dim),
-            nn.ReLU(),
-            nn.Dropout(self.dropout)
-        )
+        # Input projection
+        self.input_projection = nn.Linear(self.input_dim, self.latent_dim)
         
-        # Learned query embeddings
-        self.query_embedding = nn.Embedding(n_waypoints, self.embedding_dim)
+        # Learned latent array
+        self.latents = nn.Parameter(torch.randn(1, self.num_latents, self.latent_dim))
         
-        # Cross-attention layers
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=self.embedding_dim,
-            nhead=self.num_heads,
-            dim_feedforward=1024,  # Increased from 512
+        # Cross-attention blocks
+        self.cross_attention_blocks = nn.ModuleList([
+            nn.MultiheadAttention(
+                embed_dim=self.latent_dim,
+                num_heads=self.num_heads,
+                dropout=self.dropout,
+                batch_first=True
+            ) for _ in range(self.num_layers)
+        ])
+        
+        # Self-attention blocks for latents
+        self.self_attention_blocks = nn.ModuleList([
+            nn.MultiheadAttention(
+                embed_dim=self.latent_dim,
+                num_heads=self.num_heads,
+                dropout=self.dropout,
+                batch_first=True
+            ) for _ in range(self.num_layers)
+        ])
+        
+        # Layer norms
+        self.cross_norms = nn.ModuleList([
+            nn.LayerNorm(self.latent_dim) for _ in range(self.num_layers)
+        ])
+        self.self_norms = nn.ModuleList([
+            nn.LayerNorm(self.latent_dim) for _ in range(self.num_layers)
+        ])
+        
+        # MLPs after attention
+        self.cross_mlps = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(self.latent_dim, self.latent_dim * 4),
+                nn.GELU(),
+                nn.Dropout(self.dropout),
+                nn.Linear(self.latent_dim * 4, self.latent_dim)
+            ) for _ in range(self.num_layers)
+        ])
+        
+        self.self_mlps = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(self.latent_dim, self.latent_dim * 4),
+                nn.GELU(),
+                nn.Dropout(self.dropout),
+                nn.Linear(self.latent_dim * 4, self.latent_dim)
+            ) for _ in range(self.num_layers)
+        ])
+        
+        # Output heads
+        self.output_query = nn.Parameter(torch.randn(1, n_waypoints, self.latent_dim))
+        self.output_attention = nn.MultiheadAttention(
+            embed_dim=self.latent_dim,
+            num_heads=self.num_heads,
             dropout=self.dropout,
             batch_first=True
         )
-        self.cross_attention = nn.TransformerDecoder(
-            decoder_layer,
-            num_layers=4  # Increased from 3
-        )
+        self.output_norm = nn.LayerNorm(self.latent_dim)
         
-        # Separate output heads for lateral and longitudinal
-        self.output_lateral = nn.Sequential(
-            nn.Linear(self.embedding_dim, self.embedding_dim // 2),
-            nn.LayerNorm(self.embedding_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(self.dropout),
-            nn.Linear(self.embedding_dim // 2, 1)
-        )
-        
-        self.output_longitudinal = nn.Sequential(
-            nn.Linear(self.embedding_dim, self.embedding_dim // 2),
-            nn.LayerNorm(self.embedding_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(self.dropout),
-            nn.Linear(self.embedding_dim // 2, 1)
-        )
+        # Final output projections
+        self.output_longitudinal = nn.Linear(self.latent_dim, 1)
+        self.output_lateral = nn.Linear(self.latent_dim, 1)
     
     def forward(self, track_left, track_right):
         batch_size = track_left.shape[0]
         
-        # Process track points
+        # Reshape track points
         track_left = track_left.reshape(batch_size, self.n_track, 2)
         track_right = track_right.reshape(batch_size, self.n_track, 2)
-        track_points = torch.cat([track_left, track_right], dim=1)
-        track_features = self.input_projection(track_points)
+        track_points = torch.cat([track_left, track_right], dim=1)  # [B, 2*n_track, 2]
         
-        # Generate query embeddings
-        query_indices = torch.arange(self.n_waypoints, device=track_left.device)
-        queries = self.query_embedding(query_indices)
-        queries = queries.unsqueeze(0).expand(batch_size, -1, -1)
+        # Project input to latent dimension
+        inputs = self.input_projection(track_points)  # [B, 2*n_track, latent_dim]
         
-        # Cross-attention between queries and track features
-        output = self.cross_attention(
-            queries,  # [B, n_waypoints, D]
-            track_features,  # [B, 2*n_track, D]
+        # Expand latents for batch
+        latents = self.latents.expand(batch_size, -1, -1)  # [B, num_latents, latent_dim]
+        
+        # Process through Perceiver layers
+        for i in range(self.num_layers):
+            # Cross-attention between latents and inputs
+            cross_attn, _ = self.cross_attention_blocks[i](
+                query=latents,
+                key=inputs,
+                value=inputs
+            )
+            latents = latents + cross_attn
+            latents = self.cross_norms[i](latents)
+            latents = latents + self.cross_mlps[i](latents)
+            
+            # Self-attention between latents
+            self_attn, _ = self.self_attention_blocks[i](
+                query=latents,
+                key=latents,
+                value=latents
+            )
+            latents = latents + self_attn
+            latents = self.self_norms[i](latents)
+            latents = latents + self.self_mlps[i](latents)
+        
+        # Output processing
+        output_query = self.output_query.expand(batch_size, -1, -1)
+        output, _ = self.output_attention(
+            query=output_query,
+            key=latents,
+            value=latents
         )
+        output = self.output_norm(output)
         
-        # Project to waypoint coordinates using both heads
-        lateral = self.output_lateral(output)      # [B, n_waypoints, 1]
+        # Generate predictions
         longitudinal = self.output_longitudinal(output)  # [B, n_waypoints, 1]
+        lateral = self.output_lateral(output)  # [B, n_waypoints, 1]
         
         # Combine lateral and longitudinal predictions
         waypoints = torch.cat([longitudinal, lateral], dim=-1)  # [B, n_waypoints, 2]
