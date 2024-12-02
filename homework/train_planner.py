@@ -146,6 +146,7 @@ def train_planner(model_name='mlp'):
             track_right = batch['track_right'].to(device)
             target_waypoints = batch['waypoints'].to(device)
             waypoints_mask = batch['waypoints_mask'].to(device)
+            predicted_waypoints = model(track_left, track_right)
             
             # Gradient accumulation for more stable updates
             accumulation_steps = 2
