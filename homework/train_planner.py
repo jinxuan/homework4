@@ -28,13 +28,13 @@ BASE_CONFIG = {
 TRANSFORMER_CONFIG = {
     'batch_size': 32,            # Reduced for better stability
     'epochs': 150,
-    'learning_rate': 2e-4,       # Reduced learning rate
-    'weight_decay': 1e-4,        # Increased weight decay
-    'patience': 25,
-    't_max': 75,
+    'learning_rate': 1e-4,       # Reduced learning rate
+    'weight_decay': 5e-5,        # Adjusted weight decay
+    'patience': 15,
+    't_max': 100,               # Increased t_max for slower decay
     'eta_min': 1e-6,
-    'warmup_epochs': 5,          # Reduced warmup
-    'gradient_clip': 0.5         # Added gradient clipping
+    'warmup_epochs': 8,         # Slightly longer warmup
+    'gradient_clip': 0.3        # Reduced gradient clipping
 }
 
 def train_planner(model_name='mlp'):
@@ -58,15 +58,15 @@ def train_planner(model_name='mlp'):
     if model_name == 'transformer':
         def get_lr_multiplier(epoch):
             if epoch < config['warmup_epochs']:
-                # Smoother warmup curve
-                return epoch / config['warmup_epochs']
+                # Cosine warmup for smoother transition
+                return 0.5 * (1 + math.cos(math.pi * (1 - epoch/config['warmup_epochs'])))
             return 1.0
         
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=config['learning_rate'],
             weight_decay=config['weight_decay'],
-            betas=(0.9, 0.98)    # Standard transformer betas
+            betas=(0.9, 0.98)
         )
     else:
         optimizer = torch.optim.AdamW(
@@ -84,12 +84,19 @@ def train_planner(model_name='mlp'):
     
     def get_loss_fn(model_type):
         def transformer_loss(pred, target, mask):
-            # Separate longitudinal and lateral components
-            long_loss = F.smooth_l1_loss(pred[..., 0], target[..., 0], reduction='none')
-            lat_loss = F.smooth_l1_loss(pred[..., 1], target[..., 1], reduction='none')
+            # Weighted combination of L1 and smooth_l1_loss
+            long_loss_l1 = F.l1_loss(pred[..., 0], target[..., 0], reduction='none')
+            lat_loss_l1 = F.l1_loss(pred[..., 1], target[..., 1], reduction='none')
             
-            # Combine with higher weight on lateral error
-            loss = (long_loss + 3.0 * lat_loss) * mask
+            long_loss_smooth = F.smooth_l1_loss(pred[..., 0], target[..., 0], reduction='none', beta=0.1)
+            lat_loss_smooth = F.smooth_l1_loss(pred[..., 1], target[..., 1], reduction='none', beta=0.1)
+            
+            # Combine losses with weights
+            long_loss = 0.5 * (long_loss_l1 + long_loss_smooth)
+            lat_loss = 0.5 * (lat_loss_l1 + lat_loss_smooth)
+            
+            # Higher weight on lateral error (4.0)
+            loss = (long_loss + 4.0 * lat_loss) * mask
             
             return loss.sum() / (mask.sum() + 1e-6)
         
@@ -140,19 +147,16 @@ def train_planner(model_name='mlp'):
             target_waypoints = batch['waypoints'].to(device)
             waypoints_mask = batch['waypoints_mask'].to(device)
             
-            # Gradient accumulation for transformer
-            accumulation_steps = 4 if model_name == 'transformer' else 1
-            
-            predicted_waypoints = model(track_left, track_right)
+            # Gradient accumulation for more stable updates
+            accumulation_steps = 2
             loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask) / accumulation_steps
-            
             loss.backward()
             
-            # Apply gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['gradient_clip'])
-            
-            optimizer.step()
-            optimizer.zero_grad()
+            if (num_train_batches + 1) % accumulation_steps == 0:
+                # Clip gradients
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['gradient_clip'])
+                optimizer.step()
+                optimizer.zero_grad()
             
             total_train_loss += loss.item() * accumulation_steps
             num_train_batches += 1

@@ -70,51 +70,67 @@ class TransformerPlanner(nn.Module):
     ):
         super().__init__()
         
-        # Model dimensions
+        # Enhanced model dimensions
         self.n_track = n_track
         self.n_waypoints = n_waypoints
-        self.embedding_dim = 128
+        self.embedding_dim = 256  # Increased from 128
         self.num_heads = 8
-        self.dropout = 0.1
+        self.dropout = 0.1       # Reduced dropout
         
-        # Input processing for track points (byte array in Perceiver terms)
+        # Input processing with separate pathways for lateral and longitudinal
         self.input_projection = nn.Sequential(
             nn.Linear(2, self.embedding_dim),
             nn.LayerNorm(self.embedding_dim),
+            nn.ReLU(),
+            nn.Dropout(self.dropout)
         )
         
-        # Learned query embeddings (latent array in Perceiver terms)
+        # Learned query embeddings
         self.query_embedding = nn.Embedding(n_waypoints, self.embedding_dim)
         
         # Cross-attention layers
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.embedding_dim,
             nhead=self.num_heads,
-            dim_feedforward=512,
+            dim_feedforward=1024,  # Increased from 512
             dropout=self.dropout,
             batch_first=True
         )
         self.cross_attention = nn.TransformerDecoder(
             decoder_layer,
-            num_layers=3
+            num_layers=4  # Increased from 3
         )
         
-        # Output projection
-        self.output_projection = nn.Linear(self.embedding_dim, 2)
+        # Separate output heads for lateral and longitudinal
+        self.output_lateral = nn.Sequential(
+            nn.Linear(self.embedding_dim, self.embedding_dim // 2),
+            nn.LayerNorm(self.embedding_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.embedding_dim // 2, 1)
+        )
         
+        self.output_longitudinal = nn.Sequential(
+            nn.Linear(self.embedding_dim, self.embedding_dim // 2),
+            nn.LayerNorm(self.embedding_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.embedding_dim // 2, 1)
+        )
+    
     def forward(self, track_left, track_right):
         batch_size = track_left.shape[0]
         
-        # Process track points (byte array)
+        # Process track points
         track_left = track_left.reshape(batch_size, self.n_track, 2)
         track_right = track_right.reshape(batch_size, self.n_track, 2)
-        track_points = torch.cat([track_left, track_right], dim=1)  # [B, 2*n_track, 2]
-        track_features = self.input_projection(track_points)  # [B, 2*n_track, D]
+        track_points = torch.cat([track_left, track_right], dim=1)
+        track_features = self.input_projection(track_points)
         
-        # Generate query embeddings (latent array)
+        # Generate query embeddings
         query_indices = torch.arange(self.n_waypoints, device=track_left.device)
-        queries = self.query_embedding(query_indices)  # [n_waypoints, D]
-        queries = queries.unsqueeze(0).expand(batch_size, -1, -1)  # [B, n_waypoints, D]
+        queries = self.query_embedding(query_indices)
+        queries = queries.unsqueeze(0).expand(batch_size, -1, -1)
         
         # Cross-attention between queries and track features
         # queries = Q, track_features = K,V
@@ -124,7 +140,7 @@ class TransformerPlanner(nn.Module):
         )
         
         # Project to waypoint coordinates
-        waypoints = self.output_projection(output)  # [B, n_waypoints, 2]
+        waypoints = self.output_lateral(output)  # [B, n_waypoints, 1]
         
         return waypoints
 
@@ -179,6 +195,7 @@ def load_model(
         try:
             m.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
         except RuntimeError as e:
+            print(e)
             raise AssertionError(
                 f"Failed to load {model_path.name}, make sure the default model arguments are set correctly"
             ) from e
