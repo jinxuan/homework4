@@ -60,7 +60,7 @@ def get_loss_fn(model_type):
         lat_loss = F.l1_loss(pred[..., 1], target[..., 1], reduction='none')
         
         # Balanced weights: adjust to prevent overshadowing
-        loss = (long_loss * 4.0 + lat_loss * 1.0) * mask  # Reduced lateral weight from 4.0 to 2.0
+        loss = (long_loss * 1.0 + lat_loss * 1.0) * mask  # Reduced lateral weight from 4.0 to 2.0
         
         # Normalize by the number of valid waypoints
         return loss.sum() / (mask.sum() + 1e-6)
