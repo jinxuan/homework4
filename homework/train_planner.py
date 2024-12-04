@@ -31,12 +31,16 @@ BASE_CONFIG = {
 TRANSFORMER_CONFIG = {
     'batch_size': 32,            # Reduced for better stability
     'epochs': 150,
-    'learning_rate': 5e-3,       # Adjusted learning rate for better convergence
+    'learning_rate': 5e-4,       # Reduced from 5e-3 for better stability
     'weight_decay': 5e-4,        # Adjusted weight decay
     'patience': 25,
     't_max': 100,                # Increased T_max for slower decay
+    'learning_rate': 5e-4,       # Adjusted learning rate for better convergence
+    'weight_decay': 5e-5,        # Adjusted weight decay
+    'patience': 15,
+    't_max': 100,                # Increased T_max for slower decay
     'eta_min': 1e-6,
-    'warmup_epochs': 5,         # Increased warmup for better training stability
+    'warmup_epochs': 10,         # Increased warmup for better training stability
     'gradient_clip': 0.5         # Adjusted gradient clipping
 }
 
