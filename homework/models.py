@@ -71,138 +71,99 @@ class TransformerPlanner(nn.Module):
     ):
         super().__init__()
         
-        # Perceiver dimensions
+        # Architecture parameters
         self.n_track = n_track
         self.n_waypoints = n_waypoints
-        self.input_dim = 2  # (x, y) coordinates
-        self.latent_dim = 160  # Increased from 128 to 160
-        self.num_latents = 5   # Increased from 4 to 5
-        self.num_heads = 5     # Increased from 4 to 5
-        self.num_layers = 4    # Increased from 3 to 4
-        self.dropout = 0.25    # Slightly increased dropout
+        self.d_model = 256  # Transformer dimension
+        self.nhead = 8      # Number of attention heads
+        self.num_layers = 4
+        self.dropout = 0.1
         
-        # Input projection
-        self.input_projection = nn.Linear(self.input_dim, self.latent_dim)
+        # Input embedding
+        self.input_embedding = nn.Linear(2, self.d_model)  # From (x,y) to d_model
+        self.pos_encoder = PositionalEncoding(self.d_model, self.dropout)
         
-        # Learned latent array
-        self.latents = nn.Parameter(torch.randn(1, self.num_latents, self.latent_dim))
-        
-        # Cross-attention blocks
-        self.cross_attention_blocks = nn.ModuleList([
-            nn.MultiheadAttention(
-                embed_dim=self.latent_dim,
-                num_heads=self.num_heads,
-                dropout=self.dropout,
-                batch_first=True
-            ) for _ in range(self.num_layers)
-        ])
-        
-        # Self-attention blocks for latents
-        self.self_attention_blocks = nn.ModuleList([
-            nn.MultiheadAttention(
-                embed_dim=self.latent_dim,
-                num_heads=self.num_heads,
-                dropout=self.dropout,
-                batch_first=True
-            ) for _ in range(self.num_layers)
-        ])
-        
-        # Layer norms
-        self.cross_norms = nn.ModuleList([
-            nn.LayerNorm(self.latent_dim) for _ in range(self.num_layers)
-        ])
-        self.self_norms = nn.ModuleList([
-            nn.LayerNorm(self.latent_dim) for _ in range(self.num_layers)
-        ])
-        
-        # MLPs after attention
-        self.cross_mlps = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(self.latent_dim, self.latent_dim * 4),
-                nn.GELU(),
-                nn.Dropout(self.dropout),
-                nn.Linear(self.latent_dim * 4, self.latent_dim)
-            ) for _ in range(self.num_layers)
-        ])
-        
-        self.self_mlps = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(self.latent_dim, self.latent_dim * 4),
-                nn.GELU(),
-                nn.Dropout(self.dropout),
-                nn.Linear(self.latent_dim * 4, self.latent_dim)
-            ) for _ in range(self.num_layers)
-        ])
-        
-        # Output query embeddings (learned)
-        self.output_query = nn.Parameter(torch.randn(1, self.n_waypoints, self.latent_dim))
-        
-        # Output attention
-        self.output_attention = nn.MultiheadAttention(
-            embed_dim=self.latent_dim,
-            num_heads=self.num_heads,
+        # Transformer Encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=self.nhead,
+            dim_feedforward=1024,
             dropout=self.dropout,
             batch_first=True
         )
-        self.output_norm = nn.LayerNorm(self.latent_dim)
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=self.num_layers
+        )
         
-        # Final output projections for longitudinal and lateral
-        self.output_longitudinal = nn.Linear(self.latent_dim, 1)
-        self.output_lateral = nn.Linear(self.latent_dim, 1)
-    
+        # Transformer Decoder
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=self.d_model,
+            nhead=self.nhead,
+            dim_feedforward=1024,
+            dropout=self.dropout,
+            batch_first=True
+        )
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=self.num_layers
+        )
+        
+        # Learnable output queries
+        self.output_queries = nn.Parameter(
+            torch.randn(1, n_waypoints, self.d_model)
+        )
+        
+        # Output projection
+        self.output_projection = nn.Linear(self.d_model, 2)
+
     def forward(self, track_left, track_right):
         batch_size = track_left.shape[0]
         
-        # Reshape track points
+        # Prepare input sequence
         track_left = track_left.reshape(batch_size, self.n_track, 2)
         track_right = track_right.reshape(batch_size, self.n_track, 2)
         track_points = torch.cat([track_left, track_right], dim=1)  # [B, 2*n_track, 2]
         
-        # Project input to latent dimension
-        inputs = self.input_projection(track_points)  # [B, 2*n_track, latent_dim]
+        # Embed input
+        x = self.input_embedding(track_points)  # [B, 2*n_track, d_model]
+        x = self.pos_encoder(x)
         
-        # Expand latents for batch
-        latents = self.latents.expand(batch_size, -1, -1)  # [B, num_latents, latent_dim]
+        # Create attention mask (optional, if needed)
+        # src_mask = self._generate_square_subsequent_mask(x.size(1)).to(x.device)
         
-        # Process through Perceiver layers
-        for i in range(self.num_layers):
-            # Cross-attention between latents and inputs
-            cross_attn, _ = self.cross_attention_blocks[i](
-                query=latents,
-                key=inputs,
-                value=inputs
-            )
-            latents = latents + cross_attn
-            latents = self.cross_norms[i](latents)
-            latents = latents + self.cross_mlps[i](latents)
-            
-            # Self-attention between latents
-            self_attn, _ = self.self_attention_blocks[i](
-                query=latents,
-                key=latents,
-                value=latents
-            )
-            latents = latents + self_attn
-            latents = self.self_norms[i](latents)
-            latents = latents + self.self_mlps[i](latents)
+        # Encode track points
+        memory = self.transformer_encoder(x)
         
-        # Output processing
-        output_query = self.output_query.expand(batch_size, -1, -1)  # [B, n_waypoints, latent_dim]
-        output, _ = self.output_attention(
-            query=output_query,
-            key=latents,
-            value=latents
+        # Prepare decoder queries
+        queries = self.output_queries.expand(batch_size, -1, -1)
+        
+        # Decode
+        output = self.transformer_decoder(
+            queries,
+            memory
         )
-        output = self.output_norm(output)
         
-        # Generate predictions
-        longitudinal = self.output_longitudinal(output)  # [B, n_waypoints, 1]
-        lateral = self.output_lateral(output)          # [B, n_waypoints, 1]
-        
-        # Combine predictions
-        waypoints = torch.cat([longitudinal, lateral], dim=-1)  # [B, n_waypoints, 2]
+        # Project to waypoints
+        waypoints = self.output_projection(output)  # [B, n_waypoints, 2]
         
         return waypoints
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 100):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:, :x.size(1)]
+        return self.dropout(x)
 
 
 class CNNPlanner(torch.nn.Module):
