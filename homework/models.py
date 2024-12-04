@@ -178,67 +178,67 @@ class CNNPlanner(torch.nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN), persistent=False)
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD), persistent=False)
 
-        # Encoder
+        # Encoder with reduced filter sizes
         self.enc1 = nn.Sequential(
-            nn.Conv2d(3, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(3, 32, 3, padding=1),  # Reduced from 64
+            nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(32, 32, 3, padding=1),  # Reduced from 64
+            nn.BatchNorm2d(32),
             nn.ReLU(inplace=True)
         )
         
         self.enc2 = nn.Sequential(
             nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(32, 64, 3, padding=1),  # Reduced from 128
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(64, 64, 3, padding=1),  # Reduced from 128
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True)
         )
         
         self.enc3 = nn.Sequential(
             nn.MaxPool2d(2),
-            nn.Conv2d(128, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(64, 128, 3, padding=1),  # Reduced from 256
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(128, 128, 3, padding=1),  # Reduced from 256
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True)
         )
 
-        # Decoder with skip connections
+        # Decoder with skip connections and reduced filter sizes
         self.dec3 = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, 2, stride=2),
-            nn.BatchNorm2d(128),
+            nn.ConvTranspose2d(128, 64, 2, stride=2),  # Reduced from 256 to 128
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True)
         )
         
         self.dec2 = nn.Sequential(
-            nn.Conv2d(256, 128, 3, padding=1),  # 256 because of skip connection
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(128, 64, 2, stride=2),
+            nn.Conv2d(128, 64, 3, padding=1),  # Reduced from 256 to 128
             nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(64, 32, 2, stride=2),  # Reduced from 128 to 64
+            nn.BatchNorm2d(32),
             nn.ReLU(inplace=True)
         )
         
         self.dec1 = nn.Sequential(
-            nn.Conv2d(128, 64, 3, padding=1),  # 128 because of skip connection
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 32, 3, padding=1),
+            nn.Conv2d(64, 32, 3, padding=1),  # Reduced from 128 to 64
             nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, 3, padding=1),  # Reduced from 64 to 32
+            nn.BatchNorm2d(16),
             nn.ReLU(inplace=True)
         )
 
         # Global Average Pooling and final prediction
         self.gap = nn.AdaptiveAvgPool2d(1)
         self.final = nn.Sequential(
-            nn.Linear(32, 128),
+            nn.Linear(16, 64),  # Reduced from 32 to 16
             nn.ReLU(inplace=True),
-            nn.Linear(128, n_waypoints * 2)
+            nn.Linear(64, n_waypoints * 2)  # Reduced from 128 to 64
         )
 
     def forward(self, image: torch.Tensor, **kwargs) -> torch.Tensor:
