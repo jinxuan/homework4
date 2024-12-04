@@ -77,7 +77,7 @@ class TransformerPlanner(nn.Module):
         self.d_model = 128  # Transformer dimension
         self.nhead = 8      # Number of attention heads
         self.num_layers = 4
-        self.dropout = 0.1
+        self.dropout = 0.25
         
         # Input embedding
         self.input_embedding = nn.Linear(2, self.d_model)  # From (x,y) to d_model
