@@ -2,8 +2,9 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F  # Add this import at the top of the file
+import torch.nn.functional as F
 import math
+
 HOMEWORK_DIR = Path(__file__).resolve().parent
 INPUT_MEAN = [0.2788, 0.2657, 0.2629]
 INPUT_STD = [0.2064, 0.1944, 0.2252]
@@ -74,10 +75,10 @@ class TransformerPlanner(nn.Module):
         self.n_track = n_track
         self.n_waypoints = n_waypoints
         self.input_dim = 2  # (x, y) coordinates
-        self.latent_dim = 256
-        self.num_latents = 8
-        self.num_heads = 8
-        self.num_layers = 4
+        self.latent_dim = 128
+        self.num_latents = 4
+        self.num_heads = 4
+        self.num_layers = 3
         self.dropout = 0.1
         
         # Input projection
@@ -133,8 +134,10 @@ class TransformerPlanner(nn.Module):
             ) for _ in range(self.num_layers)
         ])
         
-        # Output heads
-        self.output_query = nn.Parameter(torch.randn(1, n_waypoints, self.latent_dim))
+        # Output query embeddings (learned)
+        self.output_query = nn.Parameter(torch.randn(1, self.n_waypoints, self.latent_dim))
+        
+        # Output attention
         self.output_attention = nn.MultiheadAttention(
             embed_dim=self.latent_dim,
             num_heads=self.num_heads,
@@ -143,7 +146,7 @@ class TransformerPlanner(nn.Module):
         )
         self.output_norm = nn.LayerNorm(self.latent_dim)
         
-        # Final output projections
+        # Final output projections for longitudinal and lateral
         self.output_longitudinal = nn.Linear(self.latent_dim, 1)
         self.output_lateral = nn.Linear(self.latent_dim, 1)
     
@@ -184,7 +187,7 @@ class TransformerPlanner(nn.Module):
             latents = latents + self.self_mlps[i](latents)
         
         # Output processing
-        output_query = self.output_query.expand(batch_size, -1, -1)
+        output_query = self.output_query.expand(batch_size, -1, -1)  # [B, n_waypoints, latent_dim]
         output, _ = self.output_attention(
             query=output_query,
             key=latents,
@@ -196,7 +199,7 @@ class TransformerPlanner(nn.Module):
         longitudinal = self.output_longitudinal(output)  # [B, n_waypoints, 1]
         lateral = self.output_lateral(output)  # [B, n_waypoints, 1]
         
-        # Combine lateral and longitudinal predictions
+        # Combine predictions
         waypoints = torch.cat([longitudinal, lateral], dim=-1)  # [B, n_waypoints, 2]
         
         return waypoints
@@ -250,14 +253,14 @@ def load_model(
         assert model_path.exists(), f"{model_path.name} not found"
 
         try:
-            m.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
+            m.load_state_dict(torch.load(model_path, map_location="cpu"), strict=True)
         except RuntimeError as e:
             print(e)
             raise AssertionError(
                 f"Failed to load {model_path.name}, make sure the default model arguments are set correctly"
             ) from e
 
-    # limit model sizes since they will be zipped and submitted
+    # Limit model sizes since they will be zipped and submitted
     model_size_mb = calculate_model_size_mb(m)
 
     if model_size_mb > 20:
@@ -282,7 +285,7 @@ def save_model(model: torch.nn.Module) -> str:
     output_path = HOMEWORK_DIR / f"{model_name}.th"
     torch.save(model.state_dict(), output_path)
 
-    return output_path
+    return str(output_path)
 
 
 def calculate_model_size_mb(model: torch.nn.Module) -> float:

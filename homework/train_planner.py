@@ -12,6 +12,8 @@ from homework.models import MLPPlanner, TransformerPlanner, save_model, load_mod
 from grader.datasets.road_dataset import load_data
 import torch.nn.functional as F
 import math
+import argparse
+
 
 # Base hyperparameters (for MLP)
 BASE_CONFIG = {
@@ -21,23 +23,47 @@ BASE_CONFIG = {
     'weight_decay': 1e-4,
     'patience': 20,
     't_max': 50,
-    'eta_min': 1e-5
+    'eta_min': 1e-5,
+    'gradient_clip': 1.0
 }
 
-# Significantly modified Transformer config
+# Modified Transformer config to reduce size
 TRANSFORMER_CONFIG = {
     'batch_size': 32,            # Reduced for better stability
     'epochs': 150,
     'learning_rate': 1e-4,       # Reduced learning rate
     'weight_decay': 5e-5,        # Adjusted weight decay
     'patience': 15,
-    't_max': 100,               # Increased t_max for slower decay
+    't_max': 100,                # Increased T_max for slower decay
     'eta_min': 1e-6,
-    'warmup_epochs': 8,         # Slightly longer warmup
-    'gradient_clip': 0.3        # Reduced gradient clipping
+    'warmup_epochs': 8,          # Slightly longer warmup
+    'gradient_clip': 0.3         # Reduced gradient clipping
 }
 
-def train_planner(model_name='mlp'):
+
+def get_loss_fn(model_type):
+    def transformer_loss(pred, target, mask):
+        # Pure L1 loss for better handling of lateral error
+        long_loss = F.l1_loss(pred[..., 0], target[..., 0], reduction='none')
+        lat_loss = F.l1_loss(pred[..., 1], target[..., 1], reduction='none')
+        
+        # Higher weight on lateral error (4.0) and apply mask
+        loss = (long_loss + 4.0 * lat_loss) * mask
+        
+        # Normalize by number of valid waypoints
+        return loss.sum() / (mask.sum() + 1e-6)
+    
+    def mlp_loss(pred, target, mask):
+        # Original MLP loss
+        mse = F.mse_loss(pred, target, reduction='none')
+        smooth_l1 = F.smooth_l1_loss(pred, target, reduction='none')
+        combined = mse + smooth_l1
+        return (combined * mask[..., None]).mean()
+    
+    return transformer_loss if model_type == 'transformer' else mlp_loss
+
+
+def train_planner(model_name='transformer'):
     config = TRANSFORMER_CONFIG if model_name == 'transformer' else BASE_CONFIG
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -78,37 +104,8 @@ def train_planner(model_name='mlp'):
     scheduler = CosineAnnealingLR(
         optimizer,
         T_max=config['t_max'],
-        eta_min=config['eta_min'],
-        verbose=True
+        eta_min=config['eta_min']
     )
-    
-    def get_loss_fn(model_type):
-        def transformer_loss(pred, target, mask):
-            # Weighted combination of L1 and smooth_l1_loss
-            long_loss_l1 = F.l1_loss(pred[..., 0], target[..., 0], reduction='none')
-            lat_loss_l1 = F.l1_loss(pred[..., 1], target[..., 1], reduction='none')
-            
-            long_loss_smooth = F.smooth_l1_loss(pred[..., 0], target[..., 0], reduction='none', beta=0.1)
-            lat_loss_smooth = F.smooth_l1_loss(pred[..., 1], target[..., 1], reduction='none', beta=0.1)
-            
-            # Combine losses with weights
-            long_loss = 0.5 * (long_loss_l1 + long_loss_smooth)
-            lat_loss = 0.5 * (lat_loss_l1 + lat_loss_smooth)
-            
-            # Higher weight on lateral error (4.0)
-            loss = (long_loss + 4.0 * lat_loss) * mask
-            
-            return loss.sum() / (mask.sum() + 1e-6)
-        
-        def mlp_loss(pred, target, mask):
-            mse = F.mse_loss(pred, target, reduction='none')
-            smooth_l1 = F.smooth_l1_loss(pred, target, reduction='none')
-            combined = mse + smooth_l1
-            return (combined * mask[..., None]).mean()
-        
-        return transformer_loss if model_type == 'transformer' else mlp_loss
-    
-    loss_fn = get_loss_fn(model_name)
     
     train_loader = load_data(
         dataset_path='drive_data/train',
@@ -141,26 +138,34 @@ def train_planner(model_name='mlp'):
         total_train_loss = 0.0
         num_train_batches = 0
         
-        for batch in train_loader:
+        for batch_idx, batch in enumerate(train_loader):
             track_left = batch['track_left'].to(device)
             track_right = batch['track_right'].to(device)
             target_waypoints = batch['waypoints'].to(device)
             waypoints_mask = batch['waypoints_mask'].to(device)
+            
+            optimizer.zero_grad()
+            
+            # Get predictions
             predicted_waypoints = model(track_left, track_right)
             
-            # Gradient accumulation for more stable updates
-            accumulation_steps = 2
-            loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask) / accumulation_steps
+            # Get the appropriate loss function
+            loss_fn = get_loss_fn(model_name)
+            
+            # Calculate loss
+            loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask)
             loss.backward()
             
-            if (num_train_batches + 1) % accumulation_steps == 0:
-                # Clip gradients
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['gradient_clip'])
-                optimizer.step()
-                optimizer.zero_grad()
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip'])
             
-            total_train_loss += loss.item() * accumulation_steps
+            optimizer.step()
+            
+            total_train_loss += loss.item()
             num_train_batches += 1
+            
+            if (batch_idx + 1) % 100 == 0:
+                print(f"  Batch [{batch_idx+1}/{len(train_loader)}] Loss: {loss.item():.4f}")
         
         avg_train_loss = total_train_loss / num_train_batches
         
@@ -177,6 +182,8 @@ def train_planner(model_name='mlp'):
                 waypoints_mask = batch['waypoints_mask'].to(device)
                 
                 predicted_waypoints = model(track_left, track_right)
+                
+                loss_fn = get_loss_fn(model_name)
                 val_loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask)
                 
                 total_val_loss += val_loss.item()
@@ -209,9 +216,12 @@ def train_planner(model_name='mlp'):
     else:
         print('No improvement during training.')
 
+
 if __name__ == "__main__":
-    # Train both models
-    # print("Starting MLP training...")
-    # train_planner('mlp')
-    print("\nStarting Transformer training...")
-    train_planner('transformer')
+    parser = argparse.ArgumentParser(description="Train Planner Model")
+    parser.add_argument('--model', type=str, default='transformer', choices=['mlp', 'transformer'], help='Model type to train')
+    
+    args = parser.parse_args()
+    
+    print(f"\nStarting {args.model.capitalize()} training...")
+    train_planner(args.model)
