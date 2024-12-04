@@ -75,11 +75,11 @@ class TransformerPlanner(nn.Module):
         self.n_track = n_track
         self.n_waypoints = n_waypoints
         self.input_dim = 2  # (x, y) coordinates
-        self.latent_dim = 128
-        self.num_latents = 4
-        self.num_heads = 4
-        self.num_layers = 3
-        self.dropout = 0.1
+        self.latent_dim = 160  # Increased from 128 to 160
+        self.num_latents = 5   # Increased from 4 to 5
+        self.num_heads = 5     # Increased from 4 to 5
+        self.num_layers = 4    # Increased from 3 to 4
+        self.dropout = 0.15    # Slightly increased dropout
         
         # Input projection
         self.input_projection = nn.Linear(self.input_dim, self.latent_dim)
@@ -197,7 +197,7 @@ class TransformerPlanner(nn.Module):
         
         # Generate predictions
         longitudinal = self.output_longitudinal(output)  # [B, n_waypoints, 1]
-        lateral = self.output_lateral(output)  # [B, n_waypoints, 1]
+        lateral = self.output_lateral(output)          # [B, n_waypoints, 1]
         
         # Combine predictions
         waypoints = torch.cat([longitudinal, lateral], dim=-1)  # [B, n_waypoints, 2]

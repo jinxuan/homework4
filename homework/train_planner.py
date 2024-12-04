@@ -2,7 +2,7 @@
 
 """
 Usage:
-    python3 -m homework.train_planner --your_args here
+    python3 -m homework.train_planner --model transformer --your_args_here
 """
 
 import torch
@@ -27,30 +27,30 @@ BASE_CONFIG = {
     'gradient_clip': 1.0
 }
 
-# Modified Transformer config to reduce size
+# Modified Transformer config to reduce size but maintain capacity
 TRANSFORMER_CONFIG = {
     'batch_size': 32,            # Reduced for better stability
     'epochs': 150,
-    'learning_rate': 1e-4,       # Reduced learning rate
+    'learning_rate': 5e-4,       # Adjusted learning rate for better convergence
     'weight_decay': 5e-5,        # Adjusted weight decay
     'patience': 15,
     't_max': 100,                # Increased T_max for slower decay
     'eta_min': 1e-6,
-    'warmup_epochs': 8,          # Slightly longer warmup
-    'gradient_clip': 0.3         # Reduced gradient clipping
+    'warmup_epochs': 10,         # Increased warmup for better training stability
+    'gradient_clip': 0.5         # Adjusted gradient clipping
 }
 
 
 def get_loss_fn(model_type):
     def transformer_loss(pred, target, mask):
-        # Pure L1 loss for better handling of lateral error
+        # Balanced L1 loss for better handling of lateral and longitudinal errors
         long_loss = F.l1_loss(pred[..., 0], target[..., 0], reduction='none')
         lat_loss = F.l1_loss(pred[..., 1], target[..., 1], reduction='none')
         
-        # Higher weight on lateral error (4.0) and apply mask
-        loss = (long_loss + 4.0 * lat_loss) * mask
+        # Balanced weights: adjust to prevent overshadowing
+        loss = (long_loss * 1.0 + lat_loss * 2.0) * mask  # Reduced lateral weight from 4.0 to 2.0
         
-        # Normalize by number of valid waypoints
+        # Normalize by the number of valid waypoints
         return loss.sum() / (mask.sum() + 1e-6)
     
     def mlp_loss(pred, target, mask):
@@ -79,13 +79,13 @@ def train_planner(model_name='transformer'):
                 nn.init.xavier_uniform_(p)
     
     print(f"Training {model_name.upper()} model...")
-
+    
     # Custom learning rate schedule for transformer
     if model_name == 'transformer':
         def get_lr_multiplier(epoch):
             if epoch < config['warmup_epochs']:
-                # Cosine warmup for smoother transition
-                return 0.5 * (1 + math.cos(math.pi * (1 - epoch/config['warmup_epochs'])))
+                # Linear warmup
+                return (epoch + 1) / config['warmup_epochs']
             return 1.0
         
         optimizer = torch.optim.AdamW(
@@ -164,8 +164,6 @@ def train_planner(model_name='transformer'):
             total_train_loss += loss.item()
             num_train_batches += 1
             
-            if (batch_idx + 1) % 100 == 0:
-                print(f"  Batch [{batch_idx+1}/{len(train_loader)}] Loss: {loss.item():.4f}")
         
         avg_train_loss = total_train_loss / num_train_batches
         
