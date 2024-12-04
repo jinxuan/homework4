@@ -124,8 +124,8 @@ def train_planner(model_name='transformer'):
         eta_min=config['eta_min']
     )
     
-    # Data loading - note the different transform for CNN
-    transform_pipeline = 'image_only' if model_name == 'cnn' else 'state_only'
+    # Data loading - use "default" instead of "image_only"
+    transform_pipeline = 'default' if model_name == 'cnn' else 'state_only'
     
     train_loader = load_data(
         dataset_path='drive_data/train',
