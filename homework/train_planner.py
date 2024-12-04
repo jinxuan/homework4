@@ -127,92 +127,101 @@ def train_planner(model_name='transformer'):
     patience_counter = 0
     best_model_state = None
     
-    for epoch in range(config['epochs']):
-        # Adjust learning rate for transformer warmup
-        if model_name == 'transformer' and epoch < config['warmup_epochs']:
-            lr_multiplier = get_lr_multiplier(epoch)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = config['learning_rate'] * lr_multiplier
-        
-        model.train()
-        total_train_loss = 0.0
-        num_train_batches = 0
-        
-        for batch_idx, batch in enumerate(train_loader):
-            track_left = batch['track_left'].to(device)
-            track_right = batch['track_right'].to(device)
-            target_waypoints = batch['waypoints'].to(device)
-            waypoints_mask = batch['waypoints_mask'].to(device)
+    try:
+        for epoch in range(config['epochs']):
+            # Adjust learning rate for transformer warmup
+            if model_name == 'transformer' and epoch < config['warmup_epochs']:
+                lr_multiplier = get_lr_multiplier(epoch)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = config['learning_rate'] * lr_multiplier
             
-            optimizer.zero_grad()
+            model.train()
+            total_train_loss = 0.0
+            num_train_batches = 0
             
-            # Get predictions
-            predicted_waypoints = model(track_left, track_right)
-            
-            # Get the appropriate loss function
-            loss_fn = get_loss_fn(model_name)
-            
-            # Calculate loss
-            loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask)
-            loss.backward()
-            
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip'])
-            
-            optimizer.step()
-            
-            total_train_loss += loss.item()
-            num_train_batches += 1
-            
-        
-        avg_train_loss = total_train_loss / num_train_batches
-        
-        # Validation phase
-        model.eval()
-        total_val_loss = 0.0
-        num_val_batches = 0
-        
-        with torch.no_grad():
-            for batch in val_loader:
+            for batch_idx, batch in enumerate(train_loader):
                 track_left = batch['track_left'].to(device)
                 track_right = batch['track_right'].to(device)
                 target_waypoints = batch['waypoints'].to(device)
                 waypoints_mask = batch['waypoints_mask'].to(device)
                 
+                optimizer.zero_grad()
+                
+                # Get predictions
                 predicted_waypoints = model(track_left, track_right)
                 
+                # Get the appropriate loss function
                 loss_fn = get_loss_fn(model_name)
-                val_loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask)
                 
-                total_val_loss += val_loss.item()
-                num_val_batches += 1
-        
-        avg_val_loss = total_val_loss / num_val_batches
-        
-        print(f'Epoch [{epoch+1}/{config["epochs"]}] '
-              f'Train Loss: {avg_train_loss:.4f} '
-              f'Val Loss: {avg_val_loss:.4f}')
-        
-        scheduler.step()
-        
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            best_model_state = model.state_dict().copy()
-            patience_counter = 0
-            print(f'New best validation loss: {best_val_loss:.4f}')
+                # Calculate loss
+                loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask)
+                loss.backward()
+                
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip'])
+                
+                optimizer.step()
+                
+                total_train_loss += loss.item()
+                num_train_batches += 1
+            
+            avg_train_loss = total_train_loss / num_train_batches
+            
+            # Validation phase
+            model.eval()
+            total_val_loss = 0.0
+            num_val_batches = 0
+            
+            with torch.no_grad():
+                for batch in val_loader:
+                    track_left = batch['track_left'].to(device)
+                    track_right = batch['track_right'].to(device)
+                    target_waypoints = batch['waypoints'].to(device)
+                    waypoints_mask = batch['waypoints_mask'].to(device)
+                    
+                    predicted_waypoints = model(track_left, track_right)
+                    
+                    loss_fn = get_loss_fn(model_name)
+                    val_loss = loss_fn(predicted_waypoints, target_waypoints, waypoints_mask)
+                    
+                    total_val_loss += val_loss.item()
+                    num_val_batches += 1
+            
+            avg_val_loss = total_val_loss / num_val_batches
+            
+            print(f'Epoch [{epoch+1}/{config["epochs"]}] '
+                  f'Train Loss: {avg_train_loss:.4f} '
+                  f'Val Loss: {avg_val_loss:.4f}')
+            
+            scheduler.step()
+            
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_model_state = model.state_dict().copy()
+                patience_counter = 0
+                print(f'New best validation loss: {best_val_loss:.4f}')
+                # Save best model immediately when we find it
+                model.load_state_dict(best_model_state)
+                save_model(model)
+                print(f'Saved best model with validation loss: {best_val_loss:.4f}')
+            else:
+                patience_counter += 1
+            
+            if patience_counter >= config['patience']:
+                print(f'Early stopping triggered after {epoch+1} epochs')
+                break
+                
+    except KeyboardInterrupt:
+        print('\nTraining interrupted by user')
+    finally:
+        print('\nSaving best model...')
+        if best_model_state is not None:
+            model.load_state_dict(best_model_state)
+            save_model(model)
+            print(f'Final best validation loss: {best_val_loss:.4f}')
         else:
-            patience_counter += 1
-        
-        if patience_counter >= config['patience']:
-            print(f'Early stopping triggered after {epoch+1} epochs')
-            break
-    
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
-        save_model(model)
-        print(f'Final best validation loss: {best_val_loss:.4f}')
-    else:
-        print('No improvement during training.')
+            print('No improvement during training, saving current model state.')
+            save_model(model)
 
 
 if __name__ == "__main__":
