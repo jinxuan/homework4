@@ -29,7 +29,7 @@ BASE_CONFIG = {
 
 # Modified Transformer config to reduce size but maintain capacity
 TRANSFORMER_CONFIG = {
-    'batch_size': 32,            # Reduced for better stability
+    'batch_size': 128,            # Reduced for better stability
     'epochs': 150,
     'learning_rate': 5e-4,       # Reduced from 5e-3 for better stability
     'weight_decay': 1e-4,        # Adjusted weight decay
