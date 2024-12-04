@@ -74,7 +74,7 @@ class TransformerPlanner(nn.Module):
         # Architecture parameters
         self.n_track = n_track
         self.n_waypoints = n_waypoints
-        self.d_model = 256  # Transformer dimension
+        self.d_model = 128  # Transformer dimension
         self.nhead = 8      # Number of attention heads
         self.num_layers = 4
         self.dropout = 0.1
