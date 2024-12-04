@@ -79,7 +79,7 @@ class TransformerPlanner(nn.Module):
         self.num_latents = 5   # Increased from 4 to 5
         self.num_heads = 5     # Increased from 4 to 5
         self.num_layers = 4    # Increased from 3 to 4
-        self.dropout = 0.15    # Slightly increased dropout
+        self.dropout = 0.25    # Slightly increased dropout
         
         # Input projection
         self.input_projection = nn.Linear(self.input_dim, self.latent_dim)
