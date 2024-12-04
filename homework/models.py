@@ -211,24 +211,100 @@ class CNNPlanner(torch.nn.Module):
         n_waypoints: int = 3,
     ):
         super().__init__()
-
         self.n_waypoints = n_waypoints
 
+        # Register normalization constants
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN), persistent=False)
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD), persistent=False)
 
+        # Encoder
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(3, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.enc2 = nn.Sequential(
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.enc3 = nn.Sequential(
+            nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True)
+        )
+
+        # Decoder with skip connections
+        self.dec3 = nn.Sequential(
+            nn.ConvTranspose2d(256, 128, 2, stride=2),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(256, 128, 3, padding=1),  # 256 because of skip connection
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(128, 64, 2, stride=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(128, 64, 3, padding=1),  # 128 because of skip connection
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        # Global Average Pooling and final prediction
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.final = nn.Sequential(
+            nn.Linear(32, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, n_waypoints * 2)
+        )
+
     def forward(self, image: torch.Tensor, **kwargs) -> torch.Tensor:
-        """
-        Args:
-            image (torch.FloatTensor): shape (b, 3, h, w) and vals in [0, 1]
+        # Normalize input
+        x = (image - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
-        Returns:
-            torch.FloatTensor: future waypoints with shape (b, n, 2)
-        """
-        x = image
-        x = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
+        # Encoder
+        e1 = self.enc1(x)
+        e2 = self.enc2(e1)
+        e3 = self.enc3(e2)
 
-        raise NotImplementedError
+        # Decoder with skip connections
+        d3 = self.dec3(e3)
+        d3 = torch.cat([d3, e2], dim=1)
+        
+        d2 = self.dec2(d3)
+        d2 = torch.cat([d2, e1], dim=1)
+        
+        d1 = self.dec1(d2)
+
+        # Global Average Pooling and reshape to waypoints
+        x = self.gap(d1)
+        x = x.view(x.size(0), -1)
+        x = self.final(x)
+        
+        # Reshape to (batch_size, n_waypoints, 2)
+        return x.view(-1, self.n_waypoints, 2)
 
 
 MODEL_FACTORY = {
