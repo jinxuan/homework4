@@ -34,3 +34,6 @@ For the 20MB model size, you can have approx. 5,242,880 parameters.
 
 
 I think a kernel size of 3 and the largest channel size of 256 can work well for this assignment.
+
+
+## Start Task 3, getting lower 
